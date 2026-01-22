@@ -12,12 +12,12 @@ from datetime import datetime
 @dataclass
 class AuditResult:
     """单个审计工具执行的结果"""
-    tool_name: str = ""                # 使用的工具名称
-    raw_output: Any = None             # 工具原始输出
-    finding: str = ""                  # LLM对结果的理解/发现
-    is_violation: bool = False         # 是否发现违规
-    score: float = 0.0                 # 违规严重程度评分 (0-1)
-    evidence_urls: List[str] = field(default_factory=list) # 证据图片/视频切片URL
+    tool_name: str = ""
+    raw_output: Any = None
+    finding: str = ""
+    is_violation: bool = False
+    score: float = 0.0
+    evidence_urls: List[str] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     
     def to_dict(self) -> Dict[str, Any]:
@@ -34,13 +34,13 @@ class AuditResult:
 
 @dataclass
 class AuditTask:
-    """审核维度任务（类似 DeepSearchAgent 的 Paragraph）"""
-    dimension: str = ""                # 审核维度 (如: 政治敏感, 色情低俗, 语音违规)
-    description: str = ""              # 任务描述
-    status: str = "pending"            # pending, running, completed, failed
-    results: List[AuditResult] = field(default_factory=list) # 该维度下的多次检测结果
-    summary: str = ""                  # 该维度的最终审核小结
-    order: int = 0                     # 任务顺序
+    """审核维度任务"""
+    dimension: str = ""
+    description: str = ""
+    status: str = "pending"
+    results: List[AuditResult] = field(default_factory=list)
+    summary: str = ""
+    order: int = 0
     
     def is_completed(self) -> bool:
         return self.status == "completed"
@@ -62,13 +62,20 @@ class AuditTask:
 @dataclass
 class JudgeState:
     """整个审核流程的状态"""
-    file_path: str = ""                # 待审核文件本地路径
-    file_type: str = ""                # 文件类型 (video, image, audio)
-    s3_url: str = ""                   # 远程存储URL
-    tasks: List[AuditTask] = field(default_factory=list) # 审核任务清单
-    final_report: str = ""             # 最终判定报告
-    is_violation: bool = False         # 整体判定是否违规
-    is_completed: bool = False         # 审核流程是否结束
+    file_path: str = ""
+    file_type: str = ""
+    s3_url: str = ""
+    
+    # 任务清单
+    tasks: List[AuditTask] = field(default_factory=list)
+    
+    # 全局共享上下文 (用于解决重复调用问题)
+    # 存储 key -> data，例如 "frames", "ocr_results", "face_results"
+    shared_context: Dict[str, Any] = field(default_factory=dict)
+    
+    final_report: str = ""
+    is_violation: bool = False
+    is_completed: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
@@ -88,6 +95,7 @@ class JudgeState:
             "file_type": self.file_type,
             "s3_url": self.s3_url,
             "tasks": [t.to_dict() for t in self.tasks],
+            "shared_context": str(self.shared_context)[:500] + "...", # 避免日志过大
             "final_report": self.final_report,
             "is_violation": self.is_violation,
             "is_completed": self.is_completed,
@@ -97,14 +105,3 @@ class JudgeState:
     
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
-    
-    def save_to_file(self, filepath: str):
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(self.to_json())
-            
-    @classmethod
-    def load_from_file(cls, filepath: str) -> "JudgeState":
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        # 这里需要复杂的解析逻辑来还原嵌套对象，目前简化处理
-        return cls(**data)

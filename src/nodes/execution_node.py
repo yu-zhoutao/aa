@@ -4,18 +4,26 @@ from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState, AuditResult
 from ..tools.base import BaseTool
 
-SYSTEM_PROMPT_EXECUTION = """你是一个任务分配器。
-你有一个任务维度描述，和一系列可用的工具。
-你需要决定使用哪些工具来完成这个审核维度的任务。
+SYSTEM_PROMPT_EXECUTION = """你是一个智能审核执行器。
+你有一个审核任务，以及一些**已经执行过的预处理结果**（如OCR文字、人脸识别结果）。
+你需要利用这些已有信息，或者调用特定的判定工具（如 behavior_judge），来完成当前维度的审核。
 
 审核维度: {dimension}
 任务描述: {description}
 
-可用工具:
+【已有的预处理数据】
+{context_summary}
+
+【可用工具】
 {tools_info}
 
-输出必须是一个 JSON 列表，包含你决定调用的工具名称及其参数。
-例如: [{{"tool_name": "frame_extract", "args": {{"sample_count": 10}}}}]
+【指令】
+1. 如果已有的数据足以判断（例如：OCR已经识别出了敏感词），则不需要再调用OCR工具，直接使用数据判定即可。
+2. 针对由于缺乏语义理解而无法直接判定的维度（如色情、政治隐喻），请积极调用 `behavior_judge` 工具。
+3. 请只返回你需要**新调用**的工具。如果不需要调用任何工具就能下结论，请返回空列表 []。
+
+输出 JSON 格式:
+例如: [{{"tool_name": "behavior_judge", "args": {{}}}}]
 """
 
 class ExecutionNode(BaseNode):
@@ -24,15 +32,49 @@ class ExecutionNode(BaseNode):
         self.tools = {t.name: t for t in tools}
         self.tools_info = "\n".join([f"- {t.name}: {t.description}" for t in tools])
 
+    def _get_context_summary(self, state: JudgeState) -> str:
+        """生成共享上下文的简要描述给 LLM"""
+        summary = []
+        ctx = state.shared_context
+        
+        if "face_identify_result" in ctx:
+            persons = ctx["face_identify_result"].get("persons", [])
+            names = [p["name"] for p in persons if p.get("name")]
+            summary.append(f"- 人脸识别: 发现 {len(persons)} 人, 姓名: {', '.join(names) or '无'}")
+            
+        if "ocr_detect_result" in ctx:
+            ocr_res = ctx["ocr_detect_result"].get("ocr_results", [])
+            # 简单统计字数
+            total_chars = sum(len(item.get("text", "")) for sub in ocr_res for item in sub.get("items", []))
+            summary.append(f"- OCR识别: 已执行，共识别约 {total_chars} 字符")
+            
+        if "yolo_detect_result" in ctx:
+            yolo_res = ctx["yolo_detect_result"].get("detections", [])
+            labels = set()
+            for sub in yolo_res:
+                for det in sub.get("bboxes", []):
+                    labels.add(det.get("label", "obj"))
+            summary.append(f"- 物体检测: 发现类别 {list(labels)}")
+            
+        return "\n".join(summary) or "无预处理数据"
+
     async def run_task(self, state: JudgeState, task_index: int, on_event: Optional[LogCallback] = None) -> JudgeState:
         task = state.tasks[task_index]
         await self.log_info(f"执行审核维度: {task.dimension}", on_event)
         task.status = "running"
         
+        # 注入帧数据到参数，供 tool 使用 (如果 tool 还没被调用过)
+        # 注意：如果是 behavior_judge，它需要 frames。
+        # 这里的 args 注入逻辑需要从 shared_context 取
+        frames = state.shared_context.get("frames", [])
+        
         user_prompt = f"维度: {task.dimension}\n描述: {task.description}\n文件路径: {state.file_path}"
+        context_summary = self._get_context_summary(state)
+        
         sys_prompt = SYSTEM_PROMPT_EXECUTION.format(
             dimension=task.dimension, 
             description=task.description,
+            context_summary=context_summary,
             tools_info=self.tools_info
         )
         
@@ -50,18 +92,20 @@ class ExecutionNode(BaseNode):
             for call in calls:
                 tool_name = call['tool_name']
                 args = call.get('args', {})
+                
+                # 智能注入参数
                 if 'file_path' not in args:
                     args['file_path'] = state.file_path
+                if 'frames' not in args and frames:
+                    args['frames'] = frames
+                
+                # 如果是 yolo/ocr/face 且已在预处理做过，理论上 LLM 不会调。
+                # 但万一调了，我们也可以在这里拦截（或者允许它重跑，取决于需求）。
+                # 这里为了简单，我们允许重跑，或者您可以加逻辑拦截。
                 
                 if tool_name in self.tools:
-                    await self.log_info(f"🚀 调用工具: {tool_name}", on_event)
-                    
-                    # 执行工具
+                    await self.log_info(f"🚀 [针对性复查] 调用: {tool_name}", on_event)
                     tool_result = await self.tools[tool_name].run(**args)
-                    
-                    # 发送特定事件 (如图片预览)
-                    if "preview_images" in tool_result and on_event:
-                        await on_event("images", tool_result["preview_images"])
                     
                     # 记录结果
                     result_obj = AuditResult(
@@ -70,7 +114,6 @@ class ExecutionNode(BaseNode):
                         finding=f"工具 {tool_name} 执行完成。"
                     )
                     task.add_result(result_obj)
-                    await self.log_info(f"✅ 工具 {tool_name} 完成", on_event)
                 else:
                     await self.log_info(f"❌ 找不到工具: {tool_name}", on_event)
                     
