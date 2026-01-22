@@ -5,6 +5,7 @@ from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState
 from ..tools.base import BaseTool
 from ..utils.evidence_utils import EvidenceUtils
+from ..engines.minio_engine import MinioEngine
 
 class PreProcessingNode(BaseNode):
     """
@@ -21,9 +22,11 @@ class PreProcessingNode(BaseNode):
         try:
             res = await self.tools[tool_name].run(**args)
             if "error" in res: return {}
-            # 只有特定的预览上传事件才发送
-            if tool_name == "preview_upload" and "preview_images" in res and on_event:
-                await on_event("images", res["preview_images"])
+            
+            # 修改：不再主动推送 preview_upload 的原图
+            # if tool_name == "preview_upload" and "preview_images" in res and on_event:
+            #     await on_event("images", res["preview_images"])
+            
             await self.log_info(f"✅ {tool_name} 完成", on_event)
             return res
         except Exception as e:
@@ -42,7 +45,8 @@ class PreProcessingNode(BaseNode):
         
         if not frames: return state
 
-        # 2. 生成初步预览 (不带框)
+        # 2. 生成初步预览 (仅内部使用，不推送到前端)
+        # 传入 None 作为 on_event，防止内部 log 刷屏，或者继续传 on_event 但 _run_tool 已屏蔽图片
         await self._run_tool("preview_upload", {"frames": frames}, on_event)
         
         # 3. 并行感知 (人脸、OCR、YOLO)
@@ -65,26 +69,28 @@ class PreProcessingNode(BaseNode):
             ocr_risk_res = await self._run_tool("ocr_risk_judge", {"ocr_results": ocr_detect_res["ocr_results"]}, on_event)
             state.shared_context["ocr_risk_result"] = ocr_risk_res
 
-        # 5. 汇总证据并统一绘图 (关键：只在这里绘图)
+        # 5. 汇总证据并统一绘图
         all_evidence_bboxes = []
         if "evidence_bboxes" in face_res: all_evidence_bboxes.extend(face_res["evidence_bboxes"])
         if "evidence_bboxes" in ocr_risk_res: all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
             
         if all_evidence_bboxes:
-            # 只处理有违规的第一帧（如果是图片），或者按需处理多帧
-            # 为简单起见且符合“只保存一张”的需求，我们只处理包含风险的第一帧
+            # 找到第一张有风险的图
             first_risk_frame_idx = all_evidence_bboxes[0]["frame_index"]
             frame_path = next((f["path"] for f in frames if f["index"] == first_risk_frame_idx), None)
             
             if frame_path:
-                # 过滤出该帧的所有框
                 frame_bboxes = [b for b in all_evidence_bboxes if b["frame_index"] == first_risk_frame_idx]
                 evidence_path = EvidenceUtils.generate_evidence_image(frame_path, frame_bboxes)
                 if evidence_path:
                     state.shared_context["evidence_images"] = [evidence_path]
-                    # 将这张带框证据图也推送给前端
+                    # 🚀 唯一推送图片的地方：只推最终证据图
                     if on_event:
                         await on_event("images", [MinioEngine.upload_file(evidence_path)])
+        else:
+            # 如果完全没有违规，为了让用户看到点东西，可以考虑推送第一帧原图
+            # 或者什么都不推，保持“只有标记图片”的承诺
+            pass
 
         # 6. 搜索情报
         search_findings = []
