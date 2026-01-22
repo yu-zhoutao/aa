@@ -2,7 +2,7 @@ import os
 import torch
 from ultralytics import YOLO
 from typing import List, Dict, Any
-from ..utils.config import Config
+from ..config import Config
 
 class YoloEngine:
     """YOLOv8 目标检测引擎 (单例)"""

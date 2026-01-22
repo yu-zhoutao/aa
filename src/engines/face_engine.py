@@ -1,6 +1,6 @@
 import requests
 from typing import List, Dict, Any
-from ..utils.config import Config
+from ..config import Config
 
 class FaceEngine:
     """API based Face Recognition Engine"""

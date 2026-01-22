@@ -11,7 +11,7 @@ import imageio_ffmpeg
 import urllib3
 from typing import List, Dict, Any, Tuple
 from multiprocessing.pool import ThreadPool
-from ..utils.config import Config
+from ..config import Config
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 

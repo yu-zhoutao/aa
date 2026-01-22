@@ -7,7 +7,7 @@ from .nodes.planning_node import PlanningNode
 from .nodes.preprocessing_node import PreProcessingNode
 from .nodes.execution_node import ExecutionNode
 from .nodes.report_node import ReportNode
-from .utils.config import load_config, Config
+from .config import load_config, Config
 from .tools.base import BaseTool
 from .utils.sse_utils import SSEUtils
 

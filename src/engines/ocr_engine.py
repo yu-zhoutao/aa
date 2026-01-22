@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 from typing import List, Dict, Any, Union
 import urllib3
-from ..utils.config import Config
+from ..config import Config
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 

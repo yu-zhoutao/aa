@@ -5,7 +5,7 @@ import uuid
 import hashlib
 from pathlib import Path
 from typing import Optional, Tuple
-from .config import Config
+from ..config import Config
 from ..engines.minio_engine import MinioEngine
 import aiohttp
 

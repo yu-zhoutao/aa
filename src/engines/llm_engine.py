@@ -1,7 +1,7 @@
 import base64
 from typing import List, Dict, Any, Union
 from ..llms.openai_llm import OpenAILLM
-from ..utils.config import Config
+from ..config import Config
 
 class LLMEngine:
     """为工具提供的 LLM 调用接口"""

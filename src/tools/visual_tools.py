@@ -3,7 +3,7 @@ import cv2
 import uuid
 import asyncio
 from typing import Dict, List, Any
-from ..utils.config import Config
+from ..config import Config
 from .base import BaseTool
 from ..engines.yolo_engine import YoloEngine
 from ..engines.face_engine import FaceEngine
@@ -11,7 +11,7 @@ from ..engines.ocr_engine import OcrEngine
 from ..engines.minio_engine import MinioEngine
 from ..engines.llm_engine import LLMEngine
 from ..utils.image_utils import ImageUtils
-from ..utils.prompts import PromptTemplates
+from ..prompts import PromptTemplates
 
 def _ensure_temp_dir():
     config = Config()

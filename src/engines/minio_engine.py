@@ -1,7 +1,7 @@
 import os
 import hashlib
 from minio import Minio
-from ..utils.config import Config
+from ..config import Config
 
 class MinioEngine:
     """MinIO 文件存储引擎 (支持内容去重)"""

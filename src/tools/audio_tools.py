@@ -4,11 +4,11 @@ import asyncio
 import time
 import imageio_ffmpeg as ffmpeg
 from typing import Dict, List, Any
-from ..utils.config import Config
+from ..config import Config
 from .base import BaseTool
 from ..engines.whisper_engine import WhisperEngine
 from ..engines.llm_engine import LLMEngine
-from ..utils.prompts import PromptTemplates
+from ..prompts import PromptTemplates
 from ..utils.json_utils import JSONUtils
 
 def _ensure_temp_dir() -> None:

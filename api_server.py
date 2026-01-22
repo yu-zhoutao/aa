@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from src.utils.config import Config
+from src.config import Config
 from src.utils.file_utils import FileUtils
 from src.utils.sse_utils import SSEUtils
 from src.agent import JudgeAgent

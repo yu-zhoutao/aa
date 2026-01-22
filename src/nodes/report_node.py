@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import Optional
 from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState
@@ -99,21 +100,18 @@ class ReportNode(BaseNode):
                      texts = [item.get("text", "") for sub in ocr_items for item in sub.get("items", [])]
                      result_lite["ocr_sample"] = "".join(texts)[:200]
                 
-                # 添加 web_search 结果
                 if r.tool_name == "web_search" and isinstance(r.raw_output, dict):
                      result_lite["search_findings"] = r.raw_output.get("search_findings", "")
 
                 task_summary["results"].append(result_lite)
             tasks_data.append(task_summary)
 
-        # 还要把预处理阶段的 shared_context 加进去，尤其是搜索结果
-        # 因为 web_search 可能是在预处理阶段跑的，不在 tasks 里
         context_summary = {}
         if "face_identify_result" in state.shared_context:
             context_summary["face"] = state.shared_context["face_identify_result"]
-        # web_search 结果目前在 shared_context 里没有显式保存，这是个遗漏点
-        # 但我们在 PreProcessingNode 里虽然跑了 web_search，但没有把它放进 shared_context
-        # 让我去 PreProcessingNode 补一下
+        
+        if "web_search_result" in state.shared_context:
+            context_summary["web_search"] = state.shared_context["web_search_result"]
 
         data_str = json.dumps({"tasks": tasks_data, "pre_check": context_summary}, ensure_ascii=False, indent=2)
         
