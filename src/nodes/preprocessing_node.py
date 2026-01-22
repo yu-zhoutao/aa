@@ -4,6 +4,7 @@ from typing import Optional, List
 from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState
 from ..tools.base import BaseTool
+from ..utils.evidence_utils import EvidenceUtils
 
 class PreProcessingNode(BaseNode):
     """
@@ -69,10 +70,50 @@ class PreProcessingNode(BaseNode):
         
         # 整理结果到 shared_context
         face_results = {}
+        ocr_detect_res = {}
+        
         for (name, _), res in zip(tasks, results):
             state.shared_context[f"{name}_result"] = res
             if name == "face_identify":
                 face_results = res
+            elif name == "ocr_detect":
+                ocr_detect_res = res
+
+        # 2.5 立即执行 OCR 敏感性判定 (OCR Risk Judge)
+        ocr_risk_res = {}
+        ocr_items = ocr_detect_res.get("ocr_results", [])
+        if ocr_items:
+            ocr_risk_res = await self._run_tool("ocr_risk_judge", {"ocr_results": ocr_items}, on_event)
+            state.shared_context["ocr_risk_result"] = ocr_risk_res
+
+        # === 收集所有证据框并统一绘图 ===
+        all_evidence_bboxes = []
+        
+        # 收集人脸敏感框
+        if "evidence_bboxes" in face_results:
+            all_evidence_bboxes.extend(face_results["evidence_bboxes"])
+            
+        # 收集OCR敏感框
+        if "evidence_bboxes" in ocr_risk_res:
+            all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
+            
+        # 生成统一证据图 (按帧分组)
+        if all_evidence_bboxes and frames:
+            frame_map = {f["index"]: f["path"] for f in frames}
+            grouped_bboxes = {}
+            for item in all_evidence_bboxes:
+                idx = item.get("frame_index", 0)
+                if idx not in grouped_bboxes: grouped_bboxes[idx] = []
+                grouped_bboxes[idx].append(item)
+            
+            for idx, bboxes in grouped_bboxes.items():
+                if idx in frame_map:
+                    original_path = frame_map[idx]
+                    evidence_path = EvidenceUtils.generate_evidence_image(original_path, bboxes)
+                    if evidence_path:
+                        print(f"📸 生成合并证据图 (帧 {idx}): {evidence_path}")
+                        # 可以在这里通过 on_event 发送给前端，或者存入 state
+                        state.shared_context.setdefault("evidence_images", []).append(evidence_path)
 
         # 6. 网络搜索 (Web Search)
         search_queries = []
@@ -96,7 +137,6 @@ class PreProcessingNode(BaseNode):
                     if s_res.get("search_findings"):
                         search_findings.append(f"[以图搜图]: {s_res['search_findings']}")
         
-        # 保存搜索结果到共享上下文
         state.shared_context["web_search_result"] = search_findings
         
         # === 打印预处理摘要 ===
@@ -122,6 +162,10 @@ class PreProcessingNode(BaseNode):
         
         if search_findings:
             print(f"   - 网络搜索: 获得 {len(search_findings)} 条情报")
+            
+        if all_evidence_bboxes:
+            print(f"   - 违规标记: 共 {len(all_evidence_bboxes)} 个风险点，已合并生成证据图")
+            
         print("="*50 + "\n")
         
         return state

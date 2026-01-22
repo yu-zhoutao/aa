@@ -17,6 +17,7 @@ from src.tools.visual_tools import (
     FaceIdentifyTool,
     YoloDetectTool,
     OcrDetectTool,
+    OcrRiskJudgeTool,
     BehaviorJudgeTool
 )
 from src.tools.audio_tools import (
@@ -70,10 +71,11 @@ async def analyze_media(
         # 视觉
         FrameExtractTool(),
         FrameUploadTool(),
-        PreviewUploadTool(), # 新增
-        FaceIdentifyTool(),  # 新增
+        PreviewUploadTool(), 
+        FaceIdentifyTool(),  
         YoloDetectTool(),
         OcrDetectTool(),
+        OcrRiskJudgeTool(), # 新增
         BehaviorJudgeTool(),
         # 听觉
         AudioTranscribeTool(),
@@ -81,7 +83,7 @@ async def analyze_media(
         AudioViolationCheckTool(),
         AudioSliceTool(),
         # 搜索
-        WebSearchTool()      # 新增
+        WebSearchTool()      
     ]
 
     agent = JudgeAgent(tools=tools)

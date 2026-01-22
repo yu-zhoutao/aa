@@ -11,6 +11,7 @@ from ..engines.ocr_engine import OcrEngine
 from ..engines.minio_engine import MinioEngine
 from ..engines.llm_engine import LLMEngine
 from ..utils.image_utils import ImageUtils
+from ..utils.evidence_utils import EvidenceUtils
 from ..prompts import PromptTemplates
 
 def _ensure_temp_dir():
@@ -86,7 +87,6 @@ class PreviewUploadTool(BaseTool):
         super().__init__("preview_upload", "生成并上传预览图")
 
     async def run(self, frames: List[Dict[str, Any]] = None, image_path: str = "", **kwargs) -> Dict[str, Any]:
-        """上传图片并返回 preview_images 供前端展示"""
         frames = _normalize_frames_input(frames, image_path)
         if not frames:
             return {"error": "必须提供 frames 或 image_path"}
@@ -96,14 +96,12 @@ class PreviewUploadTool(BaseTool):
 
         for item in frames:
             path = item.get("path")
-            if not path or not os.path.exists(path):
-                continue
+            if not path or not os.path.exists(path): continue
             try:
                 minio_url = MinioEngine.upload_file(path)
                 previews.append(minio_url)
                 frame_previews.append({"index": item["index"], "preview": minio_url})
             except Exception as e:
-                print(f"⚠️ 预览上传失败: {e}")
                 img = cv2.imread(path)
                 b64 = ImageUtils.encode_to_base64(img) if img is not None else ""
                 previews.append(f"data:image/jpeg;base64,{b64}")
@@ -122,17 +120,15 @@ class FaceIdentifyTool(BaseTool):
         
         for item in frames:
             if not item.get("minio_url") and item.get("path"):
-                try:
-                    item["minio_url"] = MinioEngine.upload_file(item["path"])
-                except:
-                    pass
+                try: item["minio_url"] = MinioEngine.upload_file(item["path"])
+                except: pass
 
-        if not frames:
-            return {"error": "无有效图片数据"}
+        if not frames: return {"error": "无有效图片数据"}
 
         persons = []
         detected_persons = []
         visual_risks = []
+        evidence_bboxes = [] # 收集证据框
 
         for item in frames:
             minio_url = item.get("minio_url")
@@ -144,10 +140,20 @@ class FaceIdentifyTool(BaseTool):
                     for p in results:
                         p_name = p.get("name", "未知")
                         p_tag = p.get("tag", "")
+                        p_bbox = p.get("bbox", []) # [x1, y1, x2, y2]
+                        
                         p_info = f"{p_name} ({p_tag})"
                         detected_persons.append(p_info)
-                        if "黑名单" in p_tag or "敏感" in p_tag:
+                        
+                        if "黑名单" in p_tag or "敏感" in p_tag or "落马" in p_tag:
                              visual_risks.append(f"发现敏感人物: {p_info}")
+                             if p_bbox:
+                                 evidence_bboxes.append({
+                                     "frame_index": item["index"],
+                                     "bbox": p_bbox,
+                                     "label": p_name,
+                                     "color": (0, 0, 255) # 红色
+                                 })
                         
                         persons.append({
                             "index": item["index"],
@@ -162,7 +168,8 @@ class FaceIdentifyTool(BaseTool):
             "status": "success", 
             "persons": persons, 
             "detected_persons": list(dict.fromkeys(detected_persons)),
-            "visual_risks": list(dict.fromkeys(visual_risks))
+            "visual_risks": list(dict.fromkeys(visual_risks)),
+            "evidence_bboxes": evidence_bboxes # 返回框数据
         }
 
 
@@ -205,51 +212,55 @@ class OcrDetectTool(BaseTool):
 
         return {"status": "success", "ocr_results": ocr_results}
 
-class ImageAnnotateTool(BaseTool):
+class OcrRiskJudgeTool(BaseTool):
     def __init__(self):
-        super().__init__("image_annotate", "图片标注")
+        super().__init__("ocr_risk_judge", "OCR 敏感文本判定与标注")
 
-    async def run(self, frames: List[Dict[str, Any]] = None, bboxes: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
-        frames = _normalize_frames_input(frames)
-        if not frames: return {"error": "无帧数据"}
-        _ensure_temp_dir()
-        config = Config()
+    async def run(self, ocr_results: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        if not ocr_results: return {"error": "无 OCR 数据"}
         
-        annotated = []
-        for item in frames:
-            path = item.get("path")
-            if not path or not os.path.exists(path): continue
+        risks = []
+        evidence_bboxes = []
+
+        for item in ocr_results:
+            texts_data = item.get("items", [])
+            if not texts_data: continue
+
+            full_text = " ".join([t.get("text", "") for t in texts_data])
+            text_map = {t.get("id", i): t.get("text", "") for i, t in enumerate(texts_data)}
             
-            img = cv2.imread(path)
-            if img is None: continue
+            prompt = PromptTemplates.ocr_judge_prompt(full_text, text_map)
+            msgs = [{"role": "user", "content": prompt}]
+            try:
+                res = await LLMEngine.get_json_response(msgs)
+                if res and res.get("id"):
+                    hit_ids = res["id"]
+                    risks.append(f"发现敏感文字: {res.get('reason', '未知原因')}")
+                    
+                    for t in texts_data:
+                        if t.get("id") in hit_ids or str(t.get("id")) in [str(x) for x in hit_ids]:
+                            if "box" in t:
+                                pts = t["box"]
+                                # 转换为 bbox [x1,y1,x2,y2]
+                                if isinstance(pts, list) and len(pts) == 4 and isinstance(pts[0], list):
+                                    xs = [p[0] for p in pts]
+                                    ys = [p[1] for p in pts]
+                                    bbox = [min(xs), min(ys), max(xs), max(ys)]
+                                    evidence_bboxes.append({
+                                        "frame_index": item.get("index", 0),
+                                        "bbox": bbox,
+                                        "label": "敏感文字",
+                                        "color": (0, 0, 255)
+                                    })
 
-            # 这里的 bboxes 结构可能需要适配
-            # 假设 bboxes 是一个列表，里面是 {'bbox': [x1, y1, x2, y2]}
-            # 但实际上 BehaviorJudgeTool 产生的是 violations 列表
-            frame_violations = item.get("violations", [])
-            
-            # 如果传入了全局 bboxes
-            if bboxes:
-                frame_violations.extend(bboxes)
+            except Exception as e:
+                print(f"OCR 判定异常: {e}")
 
-            if frame_violations:
-                to_draw = []
-                for v in frame_violations:
-                    if isinstance(v, dict) and "bbox" in v:
-                        to_draw.append(v)
-                    elif isinstance(v, list) and len(v) == 4:
-                        to_draw.append({"bbox": v})
-
-                if to_draw:
-                    img = ImageUtils.draw_detections(img, to_draw, color=(0, 0, 255), thickness=3)
-
-            temp_filename = f"annotated_{item['index']}_{uuid.uuid4().hex}.jpg"
-            temp_filepath = os.path.join(config.temp_dir, temp_filename)
-            cv2.imwrite(temp_filepath, img)
-            annotated.append({"index": item["index"], "path": temp_filepath})
-            
-        return {"status": "success", "annotated_frames": annotated}
-
+        return {
+            "status": "success",
+            "ocr_risks": risks,
+            "evidence_bboxes": evidence_bboxes # 返回框数据，不直接画图
+        }
 
 class BehaviorJudgeTool(BaseTool):
     def __init__(self):
@@ -261,12 +272,11 @@ class BehaviorJudgeTool(BaseTool):
 
         visual_risks = []
         violations = []
-        annotated_evidence = [] # 存储标注后的图片路径
+        evidence_bboxes = []
 
         for item in frames:
             path = item.get("path")
             if not path or not os.path.exists(path): continue
-            
             img = cv2.imread(path)
             if img is None: continue
 
@@ -297,30 +307,26 @@ class BehaviorJudgeTool(BaseTool):
                         visual_risks.append(f"发现敏感内容 (帧 {item['index']}, ID {idx})")
                 
                 if hit_bboxes:
-                    # 发现违规，立即调用标注工具
-                    annotator = ImageAnnotateTool()
-                    # 构造符合格式的 bboxes (如果 valid_bboxes 是纯坐标，需要包一层)
-                    draw_bboxes = []
+                    # 收集违规框
                     for b in hit_bboxes:
-                        if isinstance(b, list): draw_bboxes.append({"bbox": b})
-                        else: draw_bboxes.append(b)
-                        
-                    anno_res = await annotator.run([{"path": path, "index": item["index"]}], bboxes=draw_bboxes)
-                    if anno_res.get("annotated_frames"):
-                        evidence_path = anno_res["annotated_frames"][0]["path"]
-                        annotated_evidence.append(evidence_path)
-                        print(f"📸 生成违规证据图: {evidence_path}")
+                        if isinstance(b, dict) and "bbox" in b: bb = b["bbox"]
+                        else: bb = b
+                        evidence_bboxes.append({
+                            "frame_index": item["index"],
+                            "bbox": bb,
+                            "label": res.get("reason", "违规内容")[:10],
+                            "color": (0, 0, 255)
+                        })
 
                     violations.append({
                         "index": item["index"],
                         "bboxes": hit_bboxes,
-                        "reason": res.get("reason", ""),
-                        "evidence_path": evidence_path if anno_res.get("annotated_frames") else ""
+                        "reason": res.get("reason", "")
                     })
 
         return {
             "status": "success", 
             "visual_risks": visual_risks, 
             "violations": violations,
-            "evidence_images": annotated_evidence # 返回给外部
+            "evidence_bboxes": evidence_bboxes
         }
