@@ -24,10 +24,15 @@ class Config:
     
     # 工具 API 配置
     face_api_url: str = "http://hpcinf01.aitc.bjwdt.qihoo.net:6980/api/v1/image/sync"
+    
+    # ASR
     asr_api_url: str = os.getenv("ASR_API_URL")
-    asr_api_key: str = os.getenv("ASR_API_KEY", "") # Added key
-    asr_thread_pool_size: int = int(os.getenv("ASR_THREAD_POOL_SIZE", "6")) # Added pool size
+    asr_api_key: str = os.getenv("ASR_API_KEY", "")
+    asr_thread_pool_size: int = int(os.getenv("ASR_THREAD_POOL_SIZE", "6"))
+    
+    # OCR
     ocr_api_url: str = os.getenv("OCR_API_URL")
+    ocr_api_key: str = os.getenv("OCR_API_KEY", "")
 
     # Search API
     serpapi_key: str = os.getenv("SERPAPI_KEY", "")

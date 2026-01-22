@@ -81,25 +81,31 @@ class PreProcessingNode(BaseNode):
             if p.get("name") and p.get("name") != "未知":
                 search_queries.append(f"人物: {p['name']}")
         
+        search_findings = []
         if self.enable_search:
             await self.log_info("🔍 触发网络搜索核查...", on_event)
             if search_queries:
                 for q in set(search_queries):
-                    await self._run_tool("web_search", {"query": q}, on_event)
+                    s_res = await self._run_tool("web_search", {"query": q}, on_event)
+                    if s_res.get("search_findings"):
+                        search_findings.append(f"[{q}]: {s_res['search_findings']}")
             else:
                 if frames:
                     first_frame = frames[0].get("path")
-                    await self._run_tool("web_search", {"image_path": first_frame}, on_event)
+                    s_res = await self._run_tool("web_search", {"image_path": first_frame}, on_event)
+                    if s_res.get("search_findings"):
+                        search_findings.append(f"[以图搜图]: {s_res['search_findings']}")
+        
+        # 保存搜索结果到共享上下文
+        state.shared_context["web_search_result"] = search_findings
         
         # === 打印预处理摘要 ===
         print("\n" + "="*50)
         print("📊 预处理结果摘要:")
         
-        # 打印人脸
         p_names = [p['name'] for p in persons if p.get('name')]
         print(f"   - 人脸识别: {len(persons)} 人, 姓名: {p_names}")
         
-        # 打印OCR (取前50字)
         ocr_text = ""
         if "ocr_detect_result" in state.shared_context:
             for item in state.shared_context["ocr_detect_result"].get("ocr_results", []):
@@ -107,13 +113,15 @@ class PreProcessingNode(BaseNode):
                     ocr_text += sub.get("text", "")
         print(f"   - OCR文字: {len(ocr_text)} 字, 预览: {ocr_text[:50]}...")
         
-        # 打印YOLO
         labels = set()
         if "yolo_detect_result" in state.shared_context:
             for item in state.shared_context["yolo_detect_result"].get("detections", []):
                 for b in item.get("bboxes", []):
                     labels.add(b.get("label"))
         print(f"   - 目标检测: {list(labels)}")
+        
+        if search_findings:
+            print(f"   - 网络搜索: 获得 {len(search_findings)} 条情报")
         print("="*50 + "\n")
         
         return state

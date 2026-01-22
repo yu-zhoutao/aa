@@ -52,16 +52,7 @@ class AudioCorrectTool(BaseTool):
         correction_prompt = PromptTemplates.audio_correction_prompt(text_content)
         corrected_text = text_content
         try:
-            # 使用 LLMEngine 复用逻辑
-            msgs = [{"role": "user", "content": correction_prompt}]
-            # 注意：LLMEngine.get_json_response 期望返回 JSON，
-            # 但纠错只需要文本。这里我们直接调用 LLMEngine.get_client().invoke
-            # 或者给 LLMEngine 加一个 get_text_response 方法
-            # 为简单起见，这里直接用 OpenAILLM 的 invoke
             client = LLMEngine.get_client() 
-            corrected_text = await client.ainvoke(prompt=correction_prompt, user_prompt="") # 这里的参数可能需要适配 BaseLLM 接口
-            # BaseLLM 接口是 (system_prompt, user_prompt)
-            # 修正调用
             corrected_text = await client.ainvoke(system_prompt="You are a text corrector.", user_prompt=correction_prompt)
 
         except Exception as e:
@@ -71,9 +62,12 @@ class AudioCorrectTool(BaseTool):
 
 class AudioViolationCheckTool(BaseTool):
     def __init__(self):
-        super().__init__("audio_violation_check", "语音违规检测")
+        super().__init__("audio_violation_check", "语音违规检测与切片")
 
-    async def run(self, segments: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+    async def run(self, segments: List[Dict[str, Any]], file_path: str = "", **kwargs) -> Dict[str, Any]:
+        """
+        :param file_path: 原始文件路径，用于切片
+        """
         if not segments:
             return {"error": "缺少 segments"}
 
@@ -81,6 +75,8 @@ class AudioViolationCheckTool(BaseTool):
         judge_prompt = PromptTemplates.text_review_and_correct_json_template(formatted_text)
 
         violation_report = {"is_violation": False, "segments": []}
+        clips = []
+        
         try:
             msgs = [{"role": "user", "content": judge_prompt}]
             violation_data = await LLMEngine.get_json_response(msgs)
@@ -89,6 +85,14 @@ class AudioViolationCheckTool(BaseTool):
                 violation_report["is_violation"] = True
                 merged_anchors = JSONUtils.merge_intervals(violation_data.get("time_anchors", []))
                 violation_report["segments"] = merged_anchors
+                
+                # 如果有原文件，自动执行切片
+                if file_path and os.path.exists(file_path):
+                    slicer = AudioSliceTool()
+                    res = await slicer.run(file_path, merged_anchors)
+                    clips = res.get("clips", [])
+                    print(f"✂️ 已生成 {len(clips)} 个违规音频/视频切片证据")
+
         except Exception as e:
             print(f"音频合规性检测失败: {e}")
 
@@ -97,7 +101,8 @@ class AudioViolationCheckTool(BaseTool):
             "violation_check": violation_report,
             "evidence": {
                 "audio_risk": violation_report["is_violation"],
-                "clips": violation_report["segments"],
+                "clips": clips, # 返回切片路径
+                "segments": violation_report["segments"]
             },
         }
 

@@ -99,27 +99,15 @@ class PreviewUploadTool(BaseTool):
             if not path or not os.path.exists(path):
                 continue
             try:
-                # 为了前端能访问，我们这里假设前端可以直接访问 MinIO URL
-                # 或者是通过 API Server 挂载的 /static_temp
-                # 实际上 info_judge 是把 minio url 转换为了相对路径或者直接用
-                # 这里为了兼容性，我们直接返回 MinIO URL，前端如果也是我们写的就能处理
-                # 如果是旧前端，可能需要 /static_temp 的映射
                 minio_url = MinioEngine.upload_file(path)
-                
-                # 兼容旧前端逻辑: 取 URL 后半部分作为 key
-                # 假设 minio_url 是 http://minio.../bucket/image/xxx.jpg
-                # 前端可能直接用这个 url
                 previews.append(minio_url)
                 frame_previews.append({"index": item["index"], "preview": minio_url})
             except Exception as e:
                 print(f"⚠️ 预览上传失败: {e}")
-                # 降级：返回 base64
                 img = cv2.imread(path)
                 b64 = ImageUtils.encode_to_base64(img) if img is not None else ""
-                # data:image/jpeg;base64,...
                 previews.append(f"data:image/jpeg;base64,{b64}")
 
-        # 这个 preview_images 字段会被 ExecutionNode 捕获并发送 SSE
         return {"status": "success", "preview_images": previews, "frames": frame_previews}
 
 
@@ -132,7 +120,6 @@ class FaceIdentifyTool(BaseTool):
         if image_url:
             frames.append({"index": 0, "minio_url": image_url})
         
-        # 如果 frame 只有 path 没有 minio_url，尝试上传
         for item in frames:
             if not item.get("minio_url") and item.get("path"):
                 try:
@@ -218,6 +205,52 @@ class OcrDetectTool(BaseTool):
 
         return {"status": "success", "ocr_results": ocr_results}
 
+class ImageAnnotateTool(BaseTool):
+    def __init__(self):
+        super().__init__("image_annotate", "图片标注")
+
+    async def run(self, frames: List[Dict[str, Any]] = None, bboxes: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        frames = _normalize_frames_input(frames)
+        if not frames: return {"error": "无帧数据"}
+        _ensure_temp_dir()
+        config = Config()
+        
+        annotated = []
+        for item in frames:
+            path = item.get("path")
+            if not path or not os.path.exists(path): continue
+            
+            img = cv2.imread(path)
+            if img is None: continue
+
+            # 这里的 bboxes 结构可能需要适配
+            # 假设 bboxes 是一个列表，里面是 {'bbox': [x1, y1, x2, y2]}
+            # 但实际上 BehaviorJudgeTool 产生的是 violations 列表
+            frame_violations = item.get("violations", [])
+            
+            # 如果传入了全局 bboxes
+            if bboxes:
+                frame_violations.extend(bboxes)
+
+            if frame_violations:
+                to_draw = []
+                for v in frame_violations:
+                    if isinstance(v, dict) and "bbox" in v:
+                        to_draw.append(v)
+                    elif isinstance(v, list) and len(v) == 4:
+                        to_draw.append({"bbox": v})
+
+                if to_draw:
+                    img = ImageUtils.draw_detections(img, to_draw, color=(0, 0, 255), thickness=3)
+
+            temp_filename = f"annotated_{item['index']}_{uuid.uuid4().hex}.jpg"
+            temp_filepath = os.path.join(config.temp_dir, temp_filename)
+            cv2.imwrite(temp_filepath, img)
+            annotated.append({"index": item["index"], "path": temp_filepath})
+            
+        return {"status": "success", "annotated_frames": annotated}
+
+
 class BehaviorJudgeTool(BaseTool):
     def __init__(self):
         super().__init__("behavior_judge", "敏感行为/标识判定 (LLM)")
@@ -228,6 +261,7 @@ class BehaviorJudgeTool(BaseTool):
 
         visual_risks = []
         violations = []
+        annotated_evidence = [] # 存储标注后的图片路径
 
         for item in frames:
             path = item.get("path")
@@ -236,7 +270,6 @@ class BehaviorJudgeTool(BaseTool):
             img = cv2.imread(path)
             if img is None: continue
 
-            # 优先使用帧内特定的 bbox，否则使用全局传入的 bbox
             frame_bboxes = item.get("bboxes") or bboxes or []
             if not frame_bboxes: continue
 
@@ -264,10 +297,30 @@ class BehaviorJudgeTool(BaseTool):
                         visual_risks.append(f"发现敏感内容 (帧 {item['index']}, ID {idx})")
                 
                 if hit_bboxes:
+                    # 发现违规，立即调用标注工具
+                    annotator = ImageAnnotateTool()
+                    # 构造符合格式的 bboxes (如果 valid_bboxes 是纯坐标，需要包一层)
+                    draw_bboxes = []
+                    for b in hit_bboxes:
+                        if isinstance(b, list): draw_bboxes.append({"bbox": b})
+                        else: draw_bboxes.append(b)
+                        
+                    anno_res = await annotator.run([{"path": path, "index": item["index"]}], bboxes=draw_bboxes)
+                    if anno_res.get("annotated_frames"):
+                        evidence_path = anno_res["annotated_frames"][0]["path"]
+                        annotated_evidence.append(evidence_path)
+                        print(f"📸 生成违规证据图: {evidence_path}")
+
                     violations.append({
                         "index": item["index"],
                         "bboxes": hit_bboxes,
-                        "reason": res.get("reason", "")
+                        "reason": res.get("reason", ""),
+                        "evidence_path": evidence_path if anno_res.get("annotated_frames") else ""
                     })
 
-        return {"status": "success", "visual_risks": visual_risks, "violations": violations}
+        return {
+            "status": "success", 
+            "visual_risks": visual_risks, 
+            "violations": violations,
+            "evidence_images": annotated_evidence # 返回给外部
+        }

@@ -43,7 +43,10 @@ class OcrEngine:
                 "IMAGE": encoded_image,
                 "base64_list": ["IMAGE"]
             }
+            
             headers = {"Content-Type": "application/json"}
+            if config.ocr_api_key:
+                headers["Authorization"] = f"Bearer {config.ocr_api_key}"
             
             response = requests.post(
                 config.ocr_api_url, 
