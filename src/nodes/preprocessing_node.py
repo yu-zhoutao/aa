@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Optional, List
 from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState
@@ -39,7 +40,7 @@ class PreProcessingNode(BaseNode):
     async def run(self, state: JudgeState, on_event: Optional[LogCallback] = None) -> JudgeState:
         await self.log_info("开始多模态内容预处理...", on_event)
         
-        # 1. 抽帧 (Frame Extract) - 必须项
+        # 1. 抽帧 (Frame Extract)
         frames = []
         if state.file_type in ["image", "video"]:
             res = await self._run_tool("frame_extract", {"file_path": state.file_path, "sample_count": 8}, on_event)
@@ -50,70 +51,69 @@ class PreProcessingNode(BaseNode):
             await self.log_info("⚠️ 未提取到帧，跳过视觉预处理", on_event)
             return state
 
-        # 2. 生成预览 (Preview) - 必须项
+        # 2. 生成预览 (Preview)
         await self._run_tool("preview_upload", {"frames": frames}, on_event)
         
-        # 并行执行: 人脸识别、OCR、YOLO (提升效率)
+        # 并行执行: 人脸识别、OCR、YOLO
         tasks = []
-        
-        # 3. 人脸识别 (Face Identify) - 必须项
         task_face = self._run_tool("face_identify", {"frames": frames}, on_event)
         tasks.append(("face_identify", task_face))
         
-        # 4. OCR - 必须项
         task_ocr = self._run_tool("ocr_detect", {"frames": frames}, on_event)
         tasks.append(("ocr_detect", task_ocr))
         
-        # 5. YOLO - 必须项
         task_yolo = self._run_tool("yolo_detect", {"frames": frames}, on_event)
         tasks.append(("yolo_detect", task_yolo))
         
-        # 执行并行任务
         results = await asyncio.gather(*[t[1] for t in tasks])
         
         # 整理结果到 shared_context
         face_results = {}
-        ocr_results = []
-        
         for (name, _), res in zip(tasks, results):
             state.shared_context[f"{name}_result"] = res
             if name == "face_identify":
                 face_results = res
-            elif name == "ocr_detect":
-                ocr_results = res.get("ocr_results", [])
 
-        # 6. 网络搜索 (Web Search) - 条件触发
-        # 触发条件: 1. 识别到人名 2. 用户强制开启 (enable_search)
+        # 6. 网络搜索 (Web Search)
         search_queries = []
-        
-        # 从人脸结果提取人名
         persons = face_results.get("persons", [])
         for p in persons:
             if p.get("name") and p.get("name") != "未知":
                 search_queries.append(f"人物: {p['name']}")
         
-        # 也可以从 OCR 提取关键词 (这里简单处理，暂不提取)
-
-        # 如果没有明确人名，但开启了搜索，尝试搜第一张图 (以图搜图)
         if self.enable_search:
             await self.log_info("🔍 触发网络搜索核查...", on_event)
-            
-            # 优先搜人名
             if search_queries:
                 for q in set(search_queries):
                     await self._run_tool("web_search", {"query": q}, on_event)
             else:
-                # 没名字，以图搜图 (搜第一帧)
                 if frames:
                     first_frame = frames[0].get("path")
                     await self._run_tool("web_search", {"image_path": first_frame}, on_event)
         
-        # 缓存搜索结果
-        # 注意：web_search 主要是为了获取信息辅助判断，结果暂时只打印日志或存入 shared_context 供 LLM 读取
-        # 这里的实现比较简单，因为 Tool 内部没有把结果返回给调用者保存，而是直接打印了。
-        # 改进：我们需要把 web_search 的结果也存下来。
-        # 由于上面的 _run_tool 已经执行了，如果 web_search 结果有返回，我们需要改一下 _run_tool 逻辑？
-        # 其实 _run_tool 已经返回了 res。
-        # 修正：上面的 web_search 调用没有捕获返回值。
+        # === 打印预处理摘要 ===
+        print("\n" + "="*50)
+        print("📊 预处理结果摘要:")
+        
+        # 打印人脸
+        p_names = [p['name'] for p in persons if p.get('name')]
+        print(f"   - 人脸识别: {len(persons)} 人, 姓名: {p_names}")
+        
+        # 打印OCR (取前50字)
+        ocr_text = ""
+        if "ocr_detect_result" in state.shared_context:
+            for item in state.shared_context["ocr_detect_result"].get("ocr_results", []):
+                for sub in item.get("items", []):
+                    ocr_text += sub.get("text", "")
+        print(f"   - OCR文字: {len(ocr_text)} 字, 预览: {ocr_text[:50]}...")
+        
+        # 打印YOLO
+        labels = set()
+        if "yolo_detect_result" in state.shared_context:
+            for item in state.shared_context["yolo_detect_result"].get("detections", []):
+                for b in item.get("bboxes", []):
+                    labels.add(b.get("label"))
+        print(f"   - 目标检测: {list(labels)}")
+        print("="*50 + "\n")
         
         return state

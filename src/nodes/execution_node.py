@@ -23,8 +23,7 @@ SYSTEM_PROMPT_EXECUTION = """你是一个智能审核执行器。
 3. 请只返回你需要**新调用**的工具。如果不需要调用任何工具就能下结论，请返回空列表 []。
 
 输出 JSON 格式:
-例如: [{{"tool_name": "behavior_judge", "args": {{}}}}]
-"""
+例如: [{{"tool_name": "behavior_judge", "args": {{}}}}]"""
 
 class ExecutionNode(BaseNode):
     def __init__(self, llm_client, tools: List[BaseTool]):
@@ -44,7 +43,6 @@ class ExecutionNode(BaseNode):
             
         if "ocr_detect_result" in ctx:
             ocr_res = ctx["ocr_detect_result"].get("ocr_results", [])
-            # 简单统计字数
             total_chars = sum(len(item.get("text", "")) for sub in ocr_res for item in sub.get("items", []))
             summary.append(f"- OCR识别: 已执行，共识别约 {total_chars} 字符")
             
@@ -63,9 +61,6 @@ class ExecutionNode(BaseNode):
         await self.log_info(f"执行审核维度: {task.dimension}", on_event)
         task.status = "running"
         
-        # 注入帧数据到参数，供 tool 使用 (如果 tool 还没被调用过)
-        # 注意：如果是 behavior_judge，它需要 frames。
-        # 这里的 args 注入逻辑需要从 shared_context 取
         frames = state.shared_context.get("frames", [])
         
         user_prompt = f"维度: {task.dimension}\n描述: {task.description}\n文件路径: {state.file_path}"
@@ -80,6 +75,9 @@ class ExecutionNode(BaseNode):
         
         response = await self.llm_client.ainvoke(sys_prompt, user_prompt)
         
+        print(f"\n   [模型决策: {task.dimension}]")
+        print(f"   {response}")
+        
         try:
             clean_response = response.strip()
             if "```" in clean_response:
@@ -93,27 +91,38 @@ class ExecutionNode(BaseNode):
                 tool_name = call['tool_name']
                 args = call.get('args', {})
                 
-                # 智能注入参数
                 if 'file_path' not in args:
                     args['file_path'] = state.file_path
                 if 'frames' not in args and frames:
                     args['frames'] = frames
-                
-                # 如果是 yolo/ocr/face 且已在预处理做过，理论上 LLM 不会调。
-                # 但万一调了，我们也可以在这里拦截（或者允许它重跑，取决于需求）。
-                # 这里为了简单，我们允许重跑，或者您可以加逻辑拦截。
                 
                 if tool_name in self.tools:
                     await self.log_info(f"🚀 [针对性复查] 调用: {tool_name}", on_event)
                     tool_result = await self.tools[tool_name].run(**args)
                     
                     # 记录结果
+                    # 尝试从 tool_result 中提取结论
+                    finding = f"工具 {tool_name} 执行完成。"
+                    is_violation = False
+                    
+                    # 简单解析 behavior_judge 结果
+                    if tool_name == "behavior_judge":
+                         risks = tool_result.get("visual_risks", [])
+                         if risks:
+                             finding = f"发现风险: {'; '.join(risks)}"
+                             is_violation = True
+                    
                     result_obj = AuditResult(
                         tool_name=tool_name,
                         raw_output=tool_result,
-                        finding=f"工具 {tool_name} 执行完成。"
+                        finding=finding,
+                        is_violation=is_violation
                     )
                     task.add_result(result_obj)
+                    
+                    # 打印本次工具调用结果
+                    print(f"   -> [{tool_name}] 违规: {is_violation}, 发现: {finding[:50]}...")
+                    
                 else:
                     await self.log_info(f"❌ 找不到工具: {tool_name}", on_event)
                     
@@ -121,6 +130,10 @@ class ExecutionNode(BaseNode):
         except Exception as e:
             await self.log_info(f"❌ 执行任务失败: {e}", on_event)
             task.status = "failed"
+        
+        # 打印任务小结
+        print(f"   [维度结束] {task.dimension}: 完成")
+        print("-" * 30)
             
         return state
 

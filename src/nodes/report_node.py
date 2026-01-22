@@ -60,16 +60,14 @@ class ReportNode(BaseNode):
         if on_event:
             await on_event("final_report_start", "")
 
+        # TODO: 这里应该支持 stream 输出
         response = await self.llm_client.ainvoke(SYSTEM_PROMPT_REPORT, data_str)
         
-        if on_event:
-            # 模拟流式输出
-            chunk_size = 5
-            for i in range(0, len(response), chunk_size):
-                await on_event("token", response[i:i+chunk_size])
-                await asyncio.sleep(0.01)
-
-            await on_event("final_report_end", "")
+        print("\n" + "="*20 + " [模型输出: 最终报告] " + "="*20)
+        print(response)
+        print("=" * 60 + "\n")
+        
+        # 模拟流式输出
 
         state.final_report = response
         state.is_violation = "[违规]" in response

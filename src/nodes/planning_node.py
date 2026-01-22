@@ -32,6 +32,10 @@ class PlanningNode(BaseNode):
         
         response = await self.llm_client.ainvoke(SYSTEM_PROMPT_PLANNING, user_prompt)
         
+        print("\n" + "-"*20 + " [模型输出: 审核计划] " + "-"*20)
+        print(response)
+        print("-" * 60 + "\n")
+        
         try:
             clean_response = response.strip()
             if clean_response.startswith("```json"):
