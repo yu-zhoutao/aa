@@ -24,3 +24,31 @@ class PromptTemplates:
 文本段落映射:
 {text_map}
 """
+
+    @staticmethod
+    def audio_correction_prompt(text: str) -> str:
+        return f"""以下是一段语音转写的文本，可能包含识别错误或语气词。
+请对其进行纠错和润色，使其更加通顺，去除无意义的语气词，但保留原意。
+直接返回修改后的文本，不要包含额外解释。
+
+原文:
+{text}
+"""
+
+    @staticmethod
+    def text_review_and_correct_json_template(text: str) -> str:
+        return f"""请审核以下带有时间戳的语音文本内容。
+你需要判断其中是否包含违规内容（如色情、暴力、政治敏感、辱骂等）。
+
+文本内容:
+{text}
+
+请返回 JSON 格式：
+{{
+    "is_violation": true/false,
+    "time_anchors": [
+        {{"start": 10.5, "end": 15.0, "reason": "涉及暴力言论"}}
+    ]
+}}
+如果无违规，"is_violation" 为 false，"time_anchors" 为 []。
+"""
