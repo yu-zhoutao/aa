@@ -15,7 +15,7 @@ SYSTEM_PROMPT_EXECUTION = """你是一个任务分配器。
 {tools_info}
 
 输出必须是一个 JSON 列表，包含你决定调用的工具名称及其参数。
-例如: [{"tool_name": "frame_extract", "args": {"sample_count": 10}}]
+例如: [{{"tool_name": "frame_extract", "args": {{"sample_count": 10}}}}]
 """
 
 class ExecutionNode(BaseNode):

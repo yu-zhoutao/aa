@@ -13,6 +13,8 @@ from src.agent import JudgeAgent
 from src.tools.visual_tools import (
     FrameExtractTool,
     FrameUploadTool,
+    PreviewUploadTool,
+    FaceIdentifyTool,
     YoloDetectTool,
     OcrDetectTool,
     BehaviorJudgeTool
@@ -23,6 +25,7 @@ from src.tools.audio_tools import (
     AudioViolationCheckTool,
     AudioSliceTool
 )
+from src.tools.search_tools import WebSearchTool
 
 app = FastAPI(
     title="JudgeAgent API",
@@ -67,6 +70,8 @@ async def analyze_media(
         # 视觉
         FrameExtractTool(),
         FrameUploadTool(),
+        PreviewUploadTool(), # 新增
+        FaceIdentifyTool(),  # 新增
         YoloDetectTool(),
         OcrDetectTool(),
         BehaviorJudgeTool(),
@@ -74,7 +79,9 @@ async def analyze_media(
         AudioTranscribeTool(),
         AudioCorrectTool(),
         AudioViolationCheckTool(),
-        AudioSliceTool()
+        AudioSliceTool(),
+        # 搜索
+        WebSearchTool()      # 新增
     ]
 
     agent = JudgeAgent(tools=tools)
