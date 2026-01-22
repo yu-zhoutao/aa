@@ -12,6 +12,7 @@ from ..engines.minio_engine import MinioEngine
 from ..engines.llm_engine import LLMEngine
 from ..utils.image_utils import ImageUtils
 from ..utils.evidence_utils import EvidenceUtils
+from ..utils.json_utils import JSONUtils
 from ..prompts import PromptTemplates
 
 def _ensure_temp_dir():
@@ -23,41 +24,31 @@ def _normalize_frames_input(frames: Any = None, image_path: str = "") -> List[Di
     items: List[Dict[str, Any]] = []
     if frames:
         for item in frames:
-            if isinstance(item, str):
-                items.append({"path": item})
-            elif isinstance(item, dict):
-                items.append(dict(item))
+            if isinstance(item, str): items.append({"path": item})
+            elif isinstance(item, dict): items.append(dict(item))
     elif image_path:
         items.append({"path": image_path, "index": 0})
 
     for i, item in enumerate(items):
-        if "index" not in item:
-            item["index"] = i
+        if "index" not in item: item["index"] = i
     return items
 
 class FrameExtractTool(BaseTool):
     def __init__(self):
-        super().__init__("frame_extract", "从视频中提取关键帧或读取图片")
+        super().__init__("frame_extract", "提取关键帧")
 
     async def run(self, file_path: str, sample_count: int = 8, **kwargs) -> Dict[str, Any]:
-        if not os.path.exists(file_path):
-            return {"error": f"文件不存在: {file_path}"}
-
+        if not os.path.exists(file_path): return {"error": f"文件不存在: {file_path}"}
         _ensure_temp_dir()
         config = Config()
-        
         frames_data = ImageUtils.extract_frames(file_path, sample_count=sample_count)
-        if not frames_data:
-            return {"error": "无法提取图像帧"}
-
+        if not frames_data: return {"error": "无法提取图像帧"}
         saved_frames = []
         for item in frames_data:
-            temp_filename = f"frame_{item['index']}_{uuid.uuid4().hex}.jpg"
-            temp_filepath = os.path.join(config.temp_dir, temp_filename)
+            temp_filepath = os.path.join(config.temp_dir, f"frame_{item['index']}_{uuid.uuid4().hex[:6]}.jpg")
             cv2.imwrite(temp_filepath, item["img"])
             saved_frames.append({"index": item["index"], "path": temp_filepath})
-
-        return {"status": "success", "frames": saved_frames, "sample_count": sample_count}
+        return {"status": "success", "frames": saved_frames}
 
 class FrameUploadTool(BaseTool):
     def __init__(self):
@@ -65,268 +56,143 @@ class FrameUploadTool(BaseTool):
 
     async def run(self, frames: List[Dict[str, Any]] = None, image_path: str = "", **kwargs) -> Dict[str, Any]:
         frames = _normalize_frames_input(frames, image_path)
-        if not frames:
-            return {"error": "必须提供 frames 或 image_path"}
-
         for item in frames:
             if item.get("minio_url"): continue
             path = item.get("path")
-            if not path or not os.path.exists(path):
-                item["minio_url"] = None
-                continue
-            try:
-                item["minio_url"] = MinioEngine.upload_file(path)
-            except Exception as e:
-                print(f"⚠️ 上传失败: {e}")
-                item["minio_url"] = None
-
+            if path and os.path.exists(path):
+                try: item["minio_url"] = MinioEngine.upload_file(path)
+                except: pass
         return {"status": "success", "frames": frames}
 
 class PreviewUploadTool(BaseTool):
     def __init__(self):
-        super().__init__("preview_upload", "生成并上传预览图")
+        super().__init__("preview_upload", "预览上传")
 
     async def run(self, frames: List[Dict[str, Any]] = None, image_path: str = "", **kwargs) -> Dict[str, Any]:
         frames = _normalize_frames_input(frames, image_path)
-        if not frames:
-            return {"error": "必须提供 frames 或 image_path"}
-
         previews = []
-        frame_previews = []
-
         for item in frames:
             path = item.get("path")
             if not path or not os.path.exists(path): continue
             try:
                 minio_url = MinioEngine.upload_file(path)
                 previews.append(minio_url)
-                frame_previews.append({"index": item["index"], "preview": minio_url})
-            except Exception as e:
+            except:
                 img = cv2.imread(path)
-                b64 = ImageUtils.encode_to_base64(img) if img is not None else ""
+                b64 = ImageUtils.encode_to_base64(img)
                 previews.append(f"data:image/jpeg;base64,{b64}")
-
-        return {"status": "success", "preview_images": previews, "frames": frame_previews}
-
+        return {"status": "success", "preview_images": previews}
 
 class FaceIdentifyTool(BaseTool):
     def __init__(self):
-        super().__init__("face_identify", "人脸识别 (黑名单/人物)")
+        super().__init__("face_identify", "人脸识别")
 
-    async def run(self, frames: List[Dict[str, Any]] = None, image_url: str = "", **kwargs) -> Dict[str, Any]:
-        frames = _normalize_frames_input(frames, "")
-        if image_url:
-            frames.append({"index": 0, "minio_url": image_url})
-        
-        for item in frames:
-            if not item.get("minio_url") and item.get("path"):
-                try: item["minio_url"] = MinioEngine.upload_file(item["path"])
-                except: pass
-
-        if not frames: return {"error": "无有效图片数据"}
-
-        persons = []
-        detected_persons = []
-        visual_risks = []
-        evidence_bboxes = [] # 收集证据框
-
-        for item in frames:
-            minio_url = item.get("minio_url")
-            if not minio_url: continue
-
-            try:
-                results = await asyncio.to_thread(FaceEngine.identify_face, minio_url)
-                if results:
-                    for p in results:
-                        p_name = p.get("name", "未知")
-                        p_tag = p.get("tag", "")
-                        p_bbox = p.get("bbox", []) # [x1, y1, x2, y2]
-                        
-                        p_info = f"{p_name} ({p_tag})"
-                        detected_persons.append(p_info)
-                        
-                        if "黑名单" in p_tag or "敏感" in p_tag or "落马" in p_tag:
-                             visual_risks.append(f"发现敏感人物: {p_info}")
-                             if p_bbox:
-                                 evidence_bboxes.append({
-                                     "frame_index": item["index"],
-                                     "bbox": p_bbox,
-                                     "label": p_name,
-                                     "color": (0, 0, 255) # 红色
-                                 })
-                        
-                        persons.append({
-                            "index": item["index"],
-                            "name": p_name,
-                            "tag": p_tag,
-                            "similarity": p.get("similarity", 0)
-                        })
-            except Exception as e:
-                print(f"⚠️ 人脸识别异常: {e}")
-
-        return {
-            "status": "success", 
-            "persons": persons, 
-            "detected_persons": list(dict.fromkeys(detected_persons)),
-            "visual_risks": list(dict.fromkeys(visual_risks)),
-            "evidence_bboxes": evidence_bboxes # 返回框数据
-        }
-
-
-class YoloDetectTool(BaseTool):
-    def __init__(self):
-        super().__init__("yolo_detect", "目标检测 (YOLO)")
-
-    async def run(self, frames: List[Dict[str, Any]] = None, image_path: str = "", conf: float = 0.3, **kwargs) -> Dict[str, Any]:
-        frames = _normalize_frames_input(frames, image_path)
-        detections = []
+    async def run(self, frames: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        frames = _normalize_frames_input(frames)
+        persons, visual_risks, evidence_bboxes = [], [], []
         for item in frames:
             path = item.get("path")
             if not path or not os.path.exists(path): continue
-            
-            img = cv2.imread(path)
+            try:
+                minio_url = item.get("minio_url") or MinioEngine.upload_file(path)
+                results = await asyncio.to_thread(FaceEngine.identify_face, minio_url)
+                if results:
+                    for p in results:
+                        p_name, p_tag, p_bbox = p.get("name", "未知"), p.get("tag", ""), p.get("bbox", [])
+                        persons.append({"index": item["index"], "name": p_name, "tag": p_tag, "similarity": p.get("similarity", 0)})
+                        if any(x in p_tag for x in ["黑名单", "敏感", "落马"]):
+                             visual_risks.append(f"发现敏感人物: {p_name} ({p_tag})")
+                             if p_bbox: evidence_bboxes.append({"frame_index": item["index"], "bbox": p_bbox, "color": (0, 0, 255)})
+            except: pass
+        return {"status": "success", "persons": persons, "visual_risks": visual_risks, "evidence_bboxes": evidence_bboxes}
+
+class YoloDetectTool(BaseTool):
+    def __init__(self):
+        super().__init__("yolo_detect", "目标检测")
+
+    async def run(self, frames: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        frames = _normalize_frames_input(frames)
+        detections = []
+        for item in frames:
+            img = cv2.imread(item.get("path"))
             if img is None: continue
-
-            raw_detections = YoloEngine.detect(img, conf=conf)
-            merged = ImageUtils.merge_overlapping_boxes(raw_detections, img.shape)
-            detections.append({"index": item["index"], "path": path, "bboxes": merged})
-
+            raw = YoloEngine.detect(img)
+            merged = ImageUtils.merge_overlapping_boxes(raw, img.shape)
+            detections.append({"index": item["index"], "bboxes": merged})
         return {"status": "success", "detections": detections}
 
 class OcrDetectTool(BaseTool):
     def __init__(self):
-        super().__init__("ocr_detect", "OCR 文字检测")
+        super().__init__("ocr_detect", "OCR识别")
 
-    async def run(self, frames: List[Dict[str, Any]] = None, image_path: str = "", **kwargs) -> Dict[str, Any]:
-        frames = _normalize_frames_input(frames, image_path)
+    async def run(self, frames: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        frames = _normalize_frames_input(frames)
         ocr_results = []
         for item in frames:
-            path = item.get("path")
-            if not path or not os.path.exists(path): continue
-            
-            img = cv2.imread(path)
+            img = cv2.imread(item.get("path"))
             if img is None: continue
-            
             results = OcrEngine.detect_text(img)
-            ocr_results.append({"index": item["index"], "path": path, "items": results})
-
+            ocr_results.append({"index": item["index"], "path": item["path"], "items": results})
         return {"status": "success", "ocr_results": ocr_results}
 
 class OcrRiskJudgeTool(BaseTool):
     def __init__(self):
-        super().__init__("ocr_risk_judge", "OCR 敏感文本判定与标注")
+        super().__init__("ocr_risk_judge", "OCR风险判定")
 
     async def run(self, ocr_results: List[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
-        if not ocr_results: return {"error": "无 OCR 数据"}
-        
-        risks = []
-        evidence_bboxes = []
-
+        if not ocr_results: return {"error": "无OCR数据"}
+        risks, evidence_bboxes = [], []
         for item in ocr_results:
             texts_data = item.get("items", [])
             if not texts_data: continue
-
-            full_text = " ".join([t.get("text", "") for t in texts_data])
-            text_map = {t.get("id", i): t.get("text", "") for i, t in enumerate(texts_data)}
-            
+            full_text = " ".join([t.get("text", "") for t in texts_data])[:4000]
+            text_map = {t.get("id", i): t.get("text", "") for i, t in enumerate(texts_data[:100])}
             prompt = PromptTemplates.ocr_judge_prompt(full_text, text_map)
-            msgs = [{"role": "user", "content": prompt}]
             try:
-                res = await LLMEngine.get_json_response(msgs)
-                if res and res.get("id"):
-                    hit_ids = res["id"]
+                response_text = await LLMEngine.get_client().ainvoke(prompt, "")
+                res = JSONUtils.safe_json_loads(response_text)
+                if res and isinstance(res, dict) and res.get("id"):
+                    hit_ids = [str(x) for x in (res["id"] if isinstance(res["id"], list) else [res["id"]])]
                     risks.append(f"发现敏感文字: {res.get('reason', '未知原因')}")
-                    
                     for t in texts_data:
-                        if t.get("id") in hit_ids or str(t.get("id")) in [str(x) for x in hit_ids]:
-                            if "box" in t:
-                                pts = t["box"]
-                                # 转换为 bbox [x1,y1,x2,y2]
-                                if isinstance(pts, list) and len(pts) == 4 and isinstance(pts[0], list):
-                                    xs = [p[0] for p in pts]
-                                    ys = [p[1] for p in pts]
-                                    bbox = [min(xs), min(ys), max(xs), max(ys)]
-                                    evidence_bboxes.append({
-                                        "frame_index": item.get("index", 0),
-                                        "bbox": bbox,
-                                        "label": "敏感文字",
-                                        "color": (0, 0, 255)
-                                    })
-
-            except Exception as e:
-                print(f"OCR 判定异常: {e}")
-
-        return {
-            "status": "success",
-            "ocr_risks": risks,
-            "evidence_bboxes": evidence_bboxes # 返回框数据，不直接画图
-        }
+                        if str(t.get("id")) in hit_ids:
+                            pts = t.get("box")
+                            if isinstance(pts, list) and len(pts) == 4:
+                                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                                evidence_bboxes.append({"frame_index": item.get("index", 0), "bbox": [min(xs), min(ys), max(xs), max(ys)], "color": (0, 0, 255)})
+            except: pass
+        return {"status": "success", "ocr_risks": risks, "evidence_bboxes": evidence_bboxes}
 
 class BehaviorJudgeTool(BaseTool):
     def __init__(self):
-        super().__init__("behavior_judge", "敏感行为/标识判定 (LLM)")
+        super().__init__("behavior_judge", "行为判定")
 
     async def run(self, frames: List[Dict[str, Any]] = None, bboxes: List[List[int]] = None, **kwargs) -> Dict[str, Any]:
         frames = _normalize_frames_input(frames)
-        if not frames: return {"error": "无帧数据"}
-
-        visual_risks = []
-        violations = []
-        evidence_bboxes = []
-
+        visual_risks, evidence_bboxes = [], []
         for item in frames:
-            path = item.get("path")
-            if not path or not os.path.exists(path): continue
-            img = cv2.imread(path)
+            img = cv2.imread(item.get("path"))
             if img is None: continue
-
             frame_bboxes = item.get("bboxes") or bboxes or []
-            if not frame_bboxes: continue
-
-            slices_b64 = []
-            valid_bboxes = []
+            slices_b64, valid_bboxes = [], []
             for det in frame_bboxes:
-                bbox = det.get('bbox') if isinstance(det, dict) else det
-                if bbox:
-                    crop = ImageUtils.get_single_object_crop(img, bbox)
-                    slices_b64.append(ImageUtils.encode_to_base64(crop))
-                    valid_bboxes.append(det)
-
+                bb = det.get('bbox') if isinstance(det, dict) else det
+                if bb:
+                    slices_b64.append(ImageUtils.encode_to_base64(ImageUtils.get_single_object_crop(img, bb)))
+                    valid_bboxes.append(bb)
             if not slices_b64: continue
-
             prompt = PromptTemplates.get_image_prompt("违规行为、敏感标识、阴暗内容、同性低俗、政治旗帜")
-            msgs = LLMEngine.build_visual_message(prompt, slices_b64)
-            res = await LLMEngine.get_json_response(msgs)
+            try:
+                res = await LLMEngine.get_json_response(LLMEngine.build_visual_message(prompt, slices_b64))
+                if res and res.get("image"):
+                    for idx in res["image"]:
+                        if 0 < idx <= len(valid_bboxes):
+                            bb = valid_bboxes[idx-1]
+                            visual_risks.append(f"发现敏感内容 (帧 {item['index']}, ID {idx})")
+                            evidence_bboxes.append({"frame_index": item["index"], "bbox": bb, "color": (0, 0, 255)})
+            except: pass
+        return {"status": "success", "visual_risks": visual_risks, "evidence_bboxes": evidence_bboxes}
 
-            if res and res.get("image"):
-                hit_ids = res["image"]
-                hit_bboxes = []
-                for idx in hit_ids:
-                    if 0 < idx <= len(valid_bboxes):
-                        hit_bboxes.append(valid_bboxes[idx-1])
-                        visual_risks.append(f"发现敏感内容 (帧 {item['index']}, ID {idx})")
-                
-                if hit_bboxes:
-                    # 收集违规框
-                    for b in hit_bboxes:
-                        if isinstance(b, dict) and "bbox" in b: bb = b["bbox"]
-                        else: bb = b
-                        evidence_bboxes.append({
-                            "frame_index": item["index"],
-                            "bbox": bb,
-                            "label": res.get("reason", "违规内容")[:10],
-                            "color": (0, 0, 255)
-                        })
-
-                    violations.append({
-                        "index": item["index"],
-                        "bboxes": hit_bboxes,
-                        "reason": res.get("reason", "")
-                    })
-
-        return {
-            "status": "success", 
-            "visual_risks": visual_risks, 
-            "violations": violations,
-            "evidence_bboxes": evidence_bboxes
-        }
+class ImageAnnotateTool(BaseTool):
+    def __init__(self): super().__init__("image_annotate", "（已停用，改用EvidenceUtils）")
+    async def run(self, **kwargs): return {"status": "deprecated"}

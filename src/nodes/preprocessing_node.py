@@ -8,8 +8,7 @@ from ..utils.evidence_utils import EvidenceUtils
 
 class PreProcessingNode(BaseNode):
     """
-    预处理节点：负责强制执行通用的感知任务（抽帧、人脸、OCR、搜索）
-    避免后续任务重复调用。
+    预处理节点：负责强制执行通用的感知任务
     """
     def __init__(self, llm_client, tools: List[BaseTool], enable_search: bool = True):
         super().__init__(llm_client)
@@ -17,21 +16,14 @@ class PreProcessingNode(BaseNode):
         self.enable_search = enable_search
 
     async def _run_tool(self, tool_name: str, args: dict, on_event: Optional[LogCallback]) -> dict:
-        if tool_name not in self.tools:
-            await self.log_info(f"⚠️ 预处理工具缺失: {tool_name}", on_event)
-            return {}
-        
+        if tool_name not in self.tools: return {}
         await self.log_info(f"🚀 [预处理] 启动: {tool_name}", on_event)
         try:
             res = await self.tools[tool_name].run(**args)
-            if "error" in res:
-                await self.log_info(f"❌ {tool_name} 失败: {res['error']}", on_event)
-                return {}
-            
-            # 特殊处理预览图事件
-            if "preview_images" in res and on_event:
+            if "error" in res: return {}
+            # 只有特定的预览上传事件才发送
+            if tool_name == "preview_upload" and "preview_images" in res and on_event:
                 await on_event("images", res["preview_images"])
-                
             await self.log_info(f"✅ {tool_name} 完成", on_event)
             return res
         except Exception as e:
@@ -41,131 +33,70 @@ class PreProcessingNode(BaseNode):
     async def run(self, state: JudgeState, on_event: Optional[LogCallback] = None) -> JudgeState:
         await self.log_info("开始多模态内容预处理...", on_event)
         
-        # 1. 抽帧 (Frame Extract)
+        # 1. 抽帧
         frames = []
         if state.file_type in ["image", "video"]:
             res = await self._run_tool("frame_extract", {"file_path": state.file_path, "sample_count": 8}, on_event)
             frames = res.get("frames", [])
             state.shared_context["frames"] = frames
         
-        if not frames:
-            await self.log_info("⚠️ 未提取到帧，跳过视觉预处理", on_event)
-            return state
+        if not frames: return state
 
-        # 2. 生成预览 (Preview)
+        # 2. 生成初步预览 (不带框)
         await self._run_tool("preview_upload", {"frames": frames}, on_event)
         
-        # 并行执行: 人脸识别、OCR、YOLO
+        # 3. 并行感知 (人脸、OCR、YOLO)
         tasks = []
-        task_face = self._run_tool("face_identify", {"frames": frames}, on_event)
-        tasks.append(("face_identify", task_face))
+        tasks.append(("face_identify", self._run_tool("face_identify", {"frames": frames}, on_event)))
+        tasks.append(("ocr_detect", self._run_tool("ocr_detect", {"frames": frames}, on_event)))
+        tasks.append(("yolo_detect", self._run_tool("yolo_detect", {"frames": frames}, on_event)))
         
-        task_ocr = self._run_tool("ocr_detect", {"frames": frames}, on_event)
-        tasks.append(("ocr_detect", task_ocr))
+        results_list = await asyncio.gather(*[t[1] for t in tasks])
         
-        task_yolo = self._run_tool("yolo_detect", {"frames": frames}, on_event)
-        tasks.append(("yolo_detect", task_yolo))
-        
-        results = await asyncio.gather(*[t[1] for t in tasks])
-        
-        # 整理结果到 shared_context
-        face_results = {}
-        ocr_detect_res = {}
-        
-        for (name, _), res in zip(tasks, results):
+        face_res, ocr_detect_res, yolo_res = {}, {}, {}
+        for (name, _), res in zip(tasks, results_list):
             state.shared_context[f"{name}_result"] = res
-            if name == "face_identify":
-                face_results = res
-            elif name == "ocr_detect":
-                ocr_detect_res = res
+            if name == "face_identify": face_res = res
+            elif name == "ocr_detect": ocr_detect_res = res
 
-        # 2.5 立即执行 OCR 敏感性判定 (OCR Risk Judge)
+        # 4. OCR 敏感判定
         ocr_risk_res = {}
-        ocr_items = ocr_detect_res.get("ocr_results", [])
-        if ocr_items:
-            ocr_risk_res = await self._run_tool("ocr_risk_judge", {"ocr_results": ocr_items}, on_event)
+        if ocr_detect_res.get("ocr_results"):
+            ocr_risk_res = await self._run_tool("ocr_risk_judge", {"ocr_results": ocr_detect_res["ocr_results"]}, on_event)
             state.shared_context["ocr_risk_result"] = ocr_risk_res
 
-        # === 收集所有证据框并统一绘图 ===
+        # 5. 汇总证据并统一绘图 (关键：只在这里绘图)
         all_evidence_bboxes = []
-        
-        # 收集人脸敏感框
-        if "evidence_bboxes" in face_results:
-            all_evidence_bboxes.extend(face_results["evidence_bboxes"])
-            
-        # 收集OCR敏感框
-        if "evidence_bboxes" in ocr_risk_res:
-            all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
-            
-        # 生成统一证据图 (按帧分组)
-        if all_evidence_bboxes and frames:
-            frame_map = {f["index"]: f["path"] for f in frames}
-            grouped_bboxes = {}
-            for item in all_evidence_bboxes:
-                idx = item.get("frame_index", 0)
-                if idx not in grouped_bboxes: grouped_bboxes[idx] = []
-                grouped_bboxes[idx].append(item)
-            
-            for idx, bboxes in grouped_bboxes.items():
-                if idx in frame_map:
-                    original_path = frame_map[idx]
-                    evidence_path = EvidenceUtils.generate_evidence_image(original_path, bboxes)
-                    if evidence_path:
-                        print(f"📸 生成合并证据图 (帧 {idx}): {evidence_path}")
-                        # 可以在这里通过 on_event 发送给前端，或者存入 state
-                        state.shared_context.setdefault("evidence_images", []).append(evidence_path)
-
-        # 6. 网络搜索 (Web Search)
-        search_queries = []
-        persons = face_results.get("persons", [])
-        for p in persons:
-            if p.get("name") and p.get("name") != "未知":
-                search_queries.append(f"人物: {p['name']}")
-        
-        search_findings = []
-        if self.enable_search:
-            await self.log_info("🔍 触发网络搜索核查...", on_event)
-            if search_queries:
-                for q in set(search_queries):
-                    s_res = await self._run_tool("web_search", {"query": q}, on_event)
-                    if s_res.get("search_findings"):
-                        search_findings.append(f"[{q}]: {s_res['search_findings']}")
-            else:
-                if frames:
-                    first_frame = frames[0].get("path")
-                    s_res = await self._run_tool("web_search", {"image_path": first_frame}, on_event)
-                    if s_res.get("search_findings"):
-                        search_findings.append(f"[以图搜图]: {s_res['search_findings']}")
-        
-        state.shared_context["web_search_result"] = search_findings
-        
-        # === 打印预处理摘要 ===
-        print("\n" + "="*50)
-        print("📊 预处理结果摘要:")
-        
-        p_names = [p['name'] for p in persons if p.get('name')]
-        print(f"   - 人脸识别: {len(persons)} 人, 姓名: {p_names}")
-        
-        ocr_text = ""
-        if "ocr_detect_result" in state.shared_context:
-            for item in state.shared_context["ocr_detect_result"].get("ocr_results", []):
-                for sub in item.get("items", []):
-                    ocr_text += sub.get("text", "")
-        print(f"   - OCR文字: {len(ocr_text)} 字, 预览: {ocr_text[:50]}...")
-        
-        labels = set()
-        if "yolo_detect_result" in state.shared_context:
-            for item in state.shared_context["yolo_detect_result"].get("detections", []):
-                for b in item.get("bboxes", []):
-                    labels.add(b.get("label"))
-        print(f"   - 目标检测: {list(labels)}")
-        
-        if search_findings:
-            print(f"   - 网络搜索: 获得 {len(search_findings)} 条情报")
+        if "evidence_bboxes" in face_res: all_evidence_bboxes.extend(face_res["evidence_bboxes"])
+        if "evidence_bboxes" in ocr_risk_res: all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
             
         if all_evidence_bboxes:
-            print(f"   - 违规标记: 共 {len(all_evidence_bboxes)} 个风险点，已合并生成证据图")
+            # 只处理有违规的第一帧（如果是图片），或者按需处理多帧
+            # 为简单起见且符合“只保存一张”的需求，我们只处理包含风险的第一帧
+            first_risk_frame_idx = all_evidence_bboxes[0]["frame_index"]
+            frame_path = next((f["path"] for f in frames if f["index"] == first_risk_frame_idx), None)
             
-        print("="*50 + "\n")
+            if frame_path:
+                # 过滤出该帧的所有框
+                frame_bboxes = [b for b in all_evidence_bboxes if b["frame_index"] == first_risk_frame_idx]
+                evidence_path = EvidenceUtils.generate_evidence_image(frame_path, frame_bboxes)
+                if evidence_path:
+                    state.shared_context["evidence_images"] = [evidence_path]
+                    # 将这张带框证据图也推送给前端
+                    if on_event:
+                        await on_event("images", [MinioEngine.upload_file(evidence_path)])
+
+        # 6. 搜索情报
+        search_findings = []
+        if self.enable_search:
+            p_names = [p['name'] for p in face_res.get("persons", []) if p.get('name') and p.get('name') != "未知"]
+            if p_names:
+                for q in set(p_names):
+                    s_res = await self._run_tool("web_search", {"query": q}, on_event)
+                    if s_res.get("search_findings"): search_findings.append(f"[{q}]: {s_res['search_findings']}")
+            elif frames:
+                s_res = await self._run_tool("web_search", {"image_path": frames[0]["path"]}, on_event)
+                if s_res.get("search_findings"): search_findings.append(f"[搜图]: {s_res['search_findings']}")
         
+        state.shared_context["web_search_result"] = search_findings
         return state

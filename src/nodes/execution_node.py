@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState, AuditResult
 from ..tools.base import BaseTool
+from ..utils.json_utils import JSONUtils
 
 SYSTEM_PROMPT_EXECUTION = """你是一个智能审核执行器。
 你有一个审核任务，以及一些**已经执行过的预处理结果**（如OCR文字、人脸识别结果）。
@@ -32,7 +33,6 @@ class ExecutionNode(BaseNode):
         self.tools_info = "\n".join([f"- {t.name}: {t.description}" for t in tools])
 
     def _get_context_summary(self, state: JudgeState) -> str:
-        """生成共享上下文的简要描述给 LLM"""
         summary = []
         ctx = state.shared_context
         
@@ -51,7 +51,7 @@ class ExecutionNode(BaseNode):
             labels = set()
             for sub in yolo_res:
                 for det in sub.get("bboxes", []):
-                    labels.add(det.get("label", "obj"))
+                    labels.add(det.get("label", "obj") )
             summary.append(f"- 物体检测: 发现类别 {list(labels)}")
             
         return "\n".join(summary) or "无预处理数据"
@@ -79,16 +79,18 @@ class ExecutionNode(BaseNode):
         print(f"   {response}")
         
         try:
-            clean_response = response.strip()
-            if "```" in clean_response:
-                clean_response = clean_response.split("```")[1]
-                if clean_response.startswith("json"):
-                    clean_response = clean_response[4:]
+            calls = JSONUtils.safe_json_loads(response)
             
-            calls = json.loads(clean_response)
+            # 兼容单个对象的情况
+            if isinstance(calls, dict):
+                calls = [calls]
+            elif not isinstance(calls, list):
+                calls = [] # 解析失败或为空
             
             for call in calls:
-                tool_name = call['tool_name']
+                tool_name = call.get('tool_name')
+                if not tool_name: continue
+                
                 args = call.get('args', {})
                 
                 if 'file_path' not in args:
@@ -100,12 +102,9 @@ class ExecutionNode(BaseNode):
                     await self.log_info(f"🚀 [针对性复查] 调用: {tool_name}", on_event)
                     tool_result = await self.tools[tool_name].run(**args)
                     
-                    # 记录结果
-                    # 尝试从 tool_result 中提取结论
                     finding = f"工具 {tool_name} 执行完成。"
                     is_violation = False
                     
-                    # 简单解析 behavior_judge 结果
                     if tool_name == "behavior_judge":
                          risks = tool_result.get("visual_risks", [])
                          if risks:
@@ -120,7 +119,6 @@ class ExecutionNode(BaseNode):
                     )
                     task.add_result(result_obj)
                     
-                    # 打印本次工具调用结果
                     print(f"   -> [{tool_name}] 违规: {is_violation}, 发现: {finding[:50]}...")
                     
                 else:
@@ -131,7 +129,6 @@ class ExecutionNode(BaseNode):
             await self.log_info(f"❌ 执行任务失败: {e}", on_event)
             task.status = "failed"
         
-        # 打印任务小结
         print(f"   [维度结束] {task.dimension}: 完成")
         print("-" * 30)
             
