@@ -5,6 +5,7 @@ from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState
 from ..tools.base import BaseTool
 from ..utils.evidence_utils import EvidenceUtils
+from ..engines.minio_engine import MinioEngine
 
 class PreProcessingNode(BaseNode):
     """
