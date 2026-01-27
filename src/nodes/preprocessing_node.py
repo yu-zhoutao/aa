@@ -47,7 +47,8 @@ class PreProcessingNode(BaseNode):
 
         # 2. 生成初步预览 (仅内部使用，不推送到前端)
         # 传入 None 作为 on_event，防止内部 log 刷屏，或者继续传 on_event 但 _run_tool 已屏蔽图片
-        await self._run_tool("preview_upload", {"frames": frames}, on_event)
+        preview_res = await self._run_tool("preview_upload", {"frames": frames}, on_event)
+        current_preview_images = preview_res.get("preview_images", [])
         
         # 3. 并行感知 (人脸、OCR、YOLO)
         tasks = []
@@ -75,18 +76,34 @@ class PreProcessingNode(BaseNode):
         if "evidence_bboxes" in ocr_risk_res: all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
             
         if all_evidence_bboxes:
-            # 找到第一张有风险的图
-            first_risk_frame_idx = all_evidence_bboxes[0]["frame_index"]
-            frame_path = next((f["path"] for f in frames if f["index"] == first_risk_frame_idx), None)
+            updated = False
+            # 按帧分组 bbox
+            bboxes_by_frame = {}
+            for bbox in all_evidence_bboxes:
+                f_idx = bbox.get("frame_index", 0)
+                if f_idx not in bboxes_by_frame: bboxes_by_frame[f_idx] = []
+                bboxes_by_frame[f_idx].append(bbox)
             
-            if frame_path:
-                frame_bboxes = [b for b in all_evidence_bboxes if b["frame_index"] == first_risk_frame_idx]
-                evidence_path = EvidenceUtils.generate_evidence_image(frame_path, frame_bboxes)
-                if evidence_path:
-                    state.shared_context["evidence_images"] = [evidence_path]
-                    # 🚀 唯一推送图片的地方：只推最终证据图
-                    if on_event:
-                        await on_event("images", [MinioEngine.upload_file(evidence_path)])
+            # 遍历每一帧，如果有风险标记，则重新生成图片
+            for f_idx, bboxes in bboxes_by_frame.items():
+                # 找到对应帧的文件路径
+                frame_path = next((f["path"] for f in frames if f["index"] == f_idx), None)
+                if frame_path:
+                    evidence_path = EvidenceUtils.generate_evidence_image(frame_path, bboxes)
+                    if evidence_path:
+                        # 上传到 MinIO
+                        try:
+                            marked_url = MinioEngine.upload_file(evidence_path)
+                            # 更新预览列表中的对应位置
+                            if f_idx < len(current_preview_images):
+                                current_preview_images[f_idx] = marked_url
+                                updated = True
+                        except Exception as e:
+                            print(f"❌ 证据图上传失败: {e}")
+
+            # 如果有更新，推送新的全量图片列表给前端
+            if updated and on_event:
+                await on_event("images", current_preview_images)
         else:
             # 如果完全没有违规，为了让用户看到点东西，可以考虑推送第一帧原图
             # 或者什么都不推，保持“只有标记图片”的承诺
