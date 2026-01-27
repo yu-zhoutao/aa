@@ -105,9 +105,9 @@ class ExecutionNode(BaseNode):
                     
                     # --- 新增：向前端推送多模态证据 ---
                     if on_event:
-                        # 1. 图片预览推送
-                        if "preview_images" in tool_result:
-                            await on_event("images", tool_result["preview_images"])
+                        # 1. 图片预览推送 (已移除，防止覆盖 PreprocessingNode 生成的标记图)
+                        # if "preview_images" in tool_result:
+                        #     await on_event("images", tool_result["preview_images"])
                         
                         # 2. 音频文本 - 实现流式输出 (新增)
                         # 优先使用 corrected_text，如果没有则使用 text_content
