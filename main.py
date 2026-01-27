@@ -1,4 +1,3 @@
-
 import os
 import time
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
@@ -11,11 +10,12 @@ from info_judge_next.utils.file_utils import FileUtils
 from info_judge_next.utils.sse_utils import SSEUtils
 from info_judge_next.agent.core import AuditAgent
 
-# 导入工具
+# Import Tools
 from info_judge_next.tools.file_tools import MinioUploadTool, FrameExtractionTool
 from info_judge_next.tools.vision_tools import OcrTool, FaceDetectionTool, YoloDetectionTool
 from info_judge_next.tools.annotation_tool import ImageAnnotationTool
 from info_judge_next.tools.search_tools import WebSearchTool
+from info_judge_next.tools.audio_tools import AudioTranscribeTool  # Added
 
 app = FastAPI(title="重构版审核智能体", version="2.0.0")
 
@@ -48,7 +48,7 @@ async def analyze_media(
             yield SSEUtils.error(f"文件上传错误: {str(e)}")
         return StreamingResponse(error_handler(), media_type="text/event-stream")
 
-    # 初始化工具箱
+    # Initialize Toolkit
     tools = [
         MinioUploadTool(),
         FrameExtractionTool(),
@@ -56,7 +56,8 @@ async def analyze_media(
         FaceDetectionTool(),
         YoloDetectionTool(),
         ImageAnnotationTool(),
-        WebSearchTool()
+        WebSearchTool(),
+        AudioTranscribeTool() # Registered
     ]
 
     agent = AuditAgent(tools=tools)

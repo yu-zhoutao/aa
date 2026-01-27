@@ -30,6 +30,11 @@ class Config:
     OCR_API_URL = os.getenv("OCR_API_URL")
     OCR_API_KEY = os.getenv("OCR_API_KEY")
 
+    # --- ASR (Speech-to-Text) ---
+    ASR_API_URL = os.getenv("ASR_API_URL")
+    ASR_API_KEY = os.getenv("ASR_API_KEY")
+    ASR_THREAD_POOL_SIZE = 6
+
     # --- Paths ---
     BASE_DIR = Path(__file__).resolve().parent
     FIXED_TEMP_DIR = os.path.join(BASE_DIR, "upload_cache")
