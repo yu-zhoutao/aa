@@ -251,16 +251,19 @@ class OcrRiskJudgeTool(BaseTool):
                         if t_id is not None and str(t_id) in hit_ids_str:
                             if "box" in t:
                                 pts = t["box"]
-                                if isinstance(pts, list) and len(pts) == 4 and isinstance(pts[0], list):
-                                    xs = [p[0] for p in pts]
-                                    ys = [p[1] for p in pts]
-                                    bbox = [min(xs), min(ys), max(xs), max(ys)]
-                                    evidence_bboxes.append({
-                                        "frame_index": item.get("index", 0),
-                                        "bbox": bbox,
-                                        "label": "敏感文字",
-                                        "color": (0, 255, 0) # 🟢 绿色 (BGR: Green)
-                                    })
+                                if isinstance(pts, (list, tuple)) and len(pts) >= 4:
+                                    try:
+                                        xs = [p[0] for p in pts]
+                                        ys = [p[1] for p in pts]
+                                        bbox = [min(xs), min(ys), max(xs), max(ys)]
+                                        evidence_bboxes.append({
+                                            "frame_index": item.get("index", 0),
+                                            "bbox": bbox,
+                                            "label": "敏感文字",
+                                            "color": (0, 255, 0) # 🟢 绿色 (BGR: Green)
+                                        })
+                                    except (IndexError, TypeError):
+                                        pass
 
             except Exception as e:
                 print(f"OCR 判定异常: {e}")

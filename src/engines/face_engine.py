@@ -34,6 +34,7 @@ class FaceEngine:
                         extra_info = detail.get("extra_info", [])
                         
                         for info in extra_info:
+                            print(f"[FaceEngine] Info: {info}") # Debug
                             name = info.get("name")
                             if name and name != "unknown":
                                 found_results.append({
