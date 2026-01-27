@@ -102,6 +102,22 @@ class ExecutionNode(BaseNode):
                     await self.log_info(f"🚀 [针对性复查] 调用: {tool_name}", on_event)
                     tool_result = await self.tools[tool_name].run(**args)
                     
+                    # --- 新增：向前端推送多模态证据 ---
+                    if on_event:
+                        # 1. 图片预览推送
+                        if "preview_images" in tool_result:
+                            await on_event("images", tool_result["preview_images"])
+                        
+                        # 2. 违规切片数据推送
+                        if "violation_check" in tool_result:
+                            v_data = tool_result["violation_check"]
+                            if v_data.get("is_violation"):
+                                frontend_data = {
+                                    "is_violation": True,
+                                    "time_anchors": v_data.get("segments", [])
+                                }
+                                await on_event("violation_data", frontend_data)
+                    
                     finding = f"工具 {tool_name} 执行完成。"
                     is_violation = False
                     

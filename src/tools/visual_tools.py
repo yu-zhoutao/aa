@@ -148,13 +148,14 @@ class FaceIdentifyTool(BaseTool):
                         
                         if "黑名单" in p_tag or "敏感" in p_tag or "落马" in p_tag:
                              visual_risks.append(f"发现敏感人物: {p_info}")
-                             if p_bbox:
-                                 evidence_bboxes.append({
-                                     "frame_index": item["index"],
-                                     "bbox": p_bbox,
-                                     "label": p_name,
-                                     "color": (0, 0, 255) # 红色 (BGR: Blue, Green, Red)
-                                 })
+                        
+                        if p_bbox:
+                             evidence_bboxes.append({
+                                 "frame_index": item["index"],
+                                 "bbox": p_bbox,
+                                 "label": p_name,
+                                 "color": (0, 0, 255) # 红色
+                             })
                         
                         persons.append({
                             "index": item["index"],

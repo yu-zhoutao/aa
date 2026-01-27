@@ -91,6 +91,12 @@ class AudioViolationCheckTool(BaseTool):
                     slicer = AudioSliceTool()
                     res = await slicer.run(file_path, merged_anchors)
                     clips = res.get("clips", [])
+                    
+                    # 将 clip_url 回填到 segments 中，供前端播放
+                    for i, clip in enumerate(clips):
+                         if i < len(merged_anchors) and clip.get("file"):
+                             merged_anchors[i]["clip_url"] = f"/static_temp/{clip['file']}"
+
                     print(f"✂️ 已生成 {len(clips)} 个违规音频/视频切片证据")
 
         except Exception as e:
