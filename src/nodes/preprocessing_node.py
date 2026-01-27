@@ -96,12 +96,19 @@ class PreProcessingNode(BaseNode):
                                 marked_url = MinioEngine.upload_file(evidence_path)
                                 # 使用 list_idx 更新预览列表中的对应位置，而不是使用 f_idx (视频帧号)
                                 if list_idx < len(current_preview_images):
+                                    original_url = current_preview_images[list_idx]
+                                    print(f"🔄 [PreProcessing] 替换第 {list_idx} 帧: {original_url} -> {marked_url}")
+                                    if original_url == marked_url:
+                                        print(f"⚠️ [PreProcessing] 警告: 标记后的图片 URL 与原图相同，MinIO 可能判定内容一致或去重异常。")
                                     current_preview_images[list_idx] = marked_url
+                                else:
+                                    print(f"⚠️ [PreProcessing] 无法替换图片: list_idx {list_idx} 超出 preview_images 长度 {len(current_preview_images)}")
                             except Exception as e:
                                 print(f"❌ 证据图上传失败: {e}")
 
         # 无论是否有更新，统一在这里推送最终确认的图片列表
         if on_event:
+            print(f"📤 [PreProcessing] 推送最终图片列表 (Count: {len(current_preview_images)})")
             await on_event("images", current_preview_images)
 
         # 6. 搜索情报
