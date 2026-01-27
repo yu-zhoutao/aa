@@ -76,7 +76,6 @@ class PreProcessingNode(BaseNode):
         if "evidence_bboxes" in ocr_risk_res: all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
             
         if all_evidence_bboxes:
-            updated = False
             # 按帧分组 bbox
             bboxes_by_frame = {}
             for bbox in all_evidence_bboxes:
@@ -85,29 +84,25 @@ class PreProcessingNode(BaseNode):
                 bboxes_by_frame[f_idx].append(bbox)
             
             # 遍历每一帧，如果有风险标记，则重新生成图片
-            for f_idx, bboxes in bboxes_by_frame.items():
-                # 找到对应帧的文件路径
-                frame_path = next((f["path"] for f in frames if f["index"] == f_idx), None)
-                if frame_path:
-                    evidence_path = EvidenceUtils.generate_evidence_image(frame_path, bboxes)
-                    if evidence_path:
-                        # 上传到 MinIO
-                        try:
-                            marked_url = MinioEngine.upload_file(evidence_path)
-                            # 更新预览列表中的对应位置
-                            if f_idx < len(current_preview_images):
-                                current_preview_images[f_idx] = marked_url
-                                updated = True
-                        except Exception as e:
-                            print(f"❌ 证据图上传失败: {e}")
+            for list_idx, frame_item in enumerate(frames):
+                f_idx = frame_item["index"]
+                if f_idx in bboxes_by_frame:
+                    bboxes = bboxes_by_frame[f_idx]
+                    frame_path = frame_item.get("path")
+                    if frame_path:
+                        evidence_path = EvidenceUtils.generate_evidence_image(frame_path, bboxes)
+                        if evidence_path:
+                            try:
+                                marked_url = MinioEngine.upload_file(evidence_path)
+                                # 使用 list_idx 更新预览列表中的对应位置，而不是使用 f_idx (视频帧号)
+                                if list_idx < len(current_preview_images):
+                                    current_preview_images[list_idx] = marked_url
+                            except Exception as e:
+                                print(f"❌ 证据图上传失败: {e}")
 
-            # 如果有更新，推送新的全量图片列表给前端
-            if updated and on_event:
-                await on_event("images", current_preview_images)
-        else:
-            # 如果完全没有违规，为了让用户看到点东西，可以考虑推送第一帧原图
-            # 或者什么都不推，保持“只有标记图片”的承诺
-            pass
+        # 无论是否有更新，统一在这里推送最终确认的图片列表
+        if on_event:
+            await on_event("images", current_preview_images)
 
         # 6. 搜索情报
         search_findings = []
