@@ -103,9 +103,13 @@ class PreviewUploadTool(BaseTool):
                 previews.append(minio_url)
                 frame_previews.append({"index": item["index"], "preview": minio_url})
             except Exception as e:
+                print(f"⚠️ 预览图上传失败，回退到 Base64: {e}")
                 img = cv2.imread(path)
-                b64 = ImageUtils.encode_to_base64(img) if img is not None else ""
-                previews.append(f"data:image/jpeg;base64,{b64}")
+                if img is not None:
+                    b64 = ImageUtils.encode_to_base64(img)
+                    b64_str = f"data:image/jpeg;base64,{b64}"
+                    previews.append(b64_str)
+                    frame_previews.append({"index": item["index"], "preview": b64_str})
 
         return {"status": "success", "preview_images": previews, "frames": frame_previews}
 

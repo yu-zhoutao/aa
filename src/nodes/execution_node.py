@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import List, Dict, Optional
 from .base_node import BaseNode, LogCallback
 from ..state.state import JudgeState, AuditResult
@@ -108,7 +109,17 @@ class ExecutionNode(BaseNode):
                         if "preview_images" in tool_result:
                             await on_event("images", tool_result["preview_images"])
                         
-                        # 2. 违规切片数据推送
+                        # 2. 音频文本 - 实现流式输出 (新增)
+                        # 优先使用 corrected_text，如果没有则使用 text_content
+                        text_to_stream = tool_result.get("corrected_text") or tool_result.get("text_content")
+                        if text_to_stream:
+                            await on_event("audio_text_start", "")
+                            # 将文本按字符流式发送
+                            for char in text_to_stream:
+                                await on_event("audio_text_chunk", char)
+                                await asyncio.sleep(0.005) # 短暂暂停，模拟自然流式效果
+
+                        # 3. 违规切片数据推送
                         if "violation_check" in tool_result:
                             v_data = tool_result["violation_check"]
                             if v_data.get("is_violation"):

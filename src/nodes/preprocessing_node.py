@@ -24,8 +24,8 @@ class PreProcessingNode(BaseNode):
             if "error" in res: return {}
             
             # 修改：不再主动推送 preview_upload 的原图
-            # if tool_name == "preview_upload" and "preview_images" in res and on_event:
-            #     await on_event("images", res["preview_images"])
+            if tool_name == "preview_upload" and "preview_images" in res and on_event:
+                 await on_event("images", res["preview_images"])
             
             await self.log_info(f"✅ {tool_name} 完成", on_event)
             return res
