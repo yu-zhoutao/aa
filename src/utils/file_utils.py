@@ -120,30 +120,47 @@ class FileUtils:
 
     @staticmethod
     async def async_serper_search(image_url: str, extra_query: str = "") -> str:
-        # 注意：这里需要 SERPAPI_KEY，建议添加到 Config 中
-        # 为了兼容性，这里暂时硬编码或者尝试从环境变量取
-        serpapi_key = os.getenv("SERPAPI_KEY")
-        if not image_url or not serpapi_key: return "未启用搜索。"
+        if not image_url or not Config.SERPAPI_KEY: return "未启用搜索。"
+        
+        # 1. 修改参数适配 Google Lens
         params = {
-            "engine": "google_reverse_image", "image_url": image_url,
-            "api_key": serpapi_key, "hl": "zh-CN", "gl": "cn"
+            "engine": "google_lens", 
+            "url": image_url, 
+            "api_key": Config.SERPAPI_KEY, 
+            "hl": "zh-CN", 
+            "gl": "cn"
         }
-        if extra_query: params["q"] = extra_query
+        
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get("https://serpapi.com/search.json", params=params) as response:
+                    if response.status != 200:
+                        return f"搜索请求失败，状态码: {response.status}"
                     data = await response.json()
             
             results_text = []
-            if "knowledge_graph" in data:
-                results_text.append(f"【知识卡片】: {data['knowledge_graph'].get('title', '')}")
             
-            results = data.get("image_results", []) + data.get("inline_images", [])
-            for item in results[:6]:
-                title = item.get("title", "")
+            # 2. 优先提取知识图谱（如果识别出了具体物体/人物）
+            if "knowledge_graph" in data:
+                kg = data['knowledge_graph']
+                kg_title = kg.get('title', '')
+                if kg_title:
+                    results_text.append(f"【识别结果】: {kg_title}")
+            
+            # 3. 提取 visual_matches 中的 title 和 link
+            matches = data.get("visual_matches", [])
+            
+            for item in matches[:6]: # 限制返回前 6 个
+                title = item.get("title", "").strip()
+                link = item.get("link", "")
                 source = item.get("source", "")
-                if title: results_text.append(f"- [{source}] {title}")
+                
+                if title and link:
+                    # 格式：[来源] 标题 + 换行链接
+                    entry = f"- [{source}] {title}\n  {link}" if source else f"- {title}\n  {link}"
+                    results_text.append(entry)
                 
             return "\n".join(results_text) if results_text else "未搜索到相关结果。"
+            
         except Exception as e:
             return f"搜索服务错误: {str(e)}"
