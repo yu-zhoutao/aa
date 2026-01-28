@@ -1,11 +1,23 @@
 class PromptTemplates:
     @staticmethod
-    def get_image_prompt(labels: str) -> str:
-        return f"""请仔细观察图片，判断是否存在以下违规内容：{labels}。
-请返回 JSON 格式，包含：
-- "image": [违规图片的索引ID列表, 从1开始]
-- "reason": "违规原因说明"
-如果无违规，"image" 返回空列表 []。
+    def get_image_prompt(bad_type: str) -> str:
+        """
+        用于通用视觉违规行为判定的提示词模板
+        """
+        return f"""你是一位专业的内容安全审核专家。
+任务：请分析以下提供的图片序列中，哪些内容涉及【{bad_type}】。
+
+【判定维度】：
+1. 违规行为：是否存在攻击性手势、非法集会、危险动作或违背社会公德的行为。
+2. 敏感标识：是否包含违规旗帜、邪教符号、受限组织的徽标或水印。
+3. 丑化阴暗：是否涉及嘲讽/丑化公众人物、展现极端人性阴暗面或血腥不适的内容。
+
+【输出要求】：
+- 必须使用 JSON 格式输出。
+- 格式示例：{{"image": [1, 3]}}  (数字对应图片的顺序编号，从1开始)
+- 如果全部合规，输出：{{"image": []}}
+- 严禁输出任何解释、分析或多余文字。
+
 """
 
     @staticmethod
@@ -37,18 +49,23 @@ class PromptTemplates:
 
     @staticmethod
     def text_review_and_correct_json_template(text: str) -> str:
-        return f"""请审核以下带有时间戳的语音文本内容。
+        return f"""你是一个内容安全专家。下面是语音转写的文本内容（带有时间戳）：
 你需要判断其中是否包含违规内容（如色情、暴力、政治敏感、辱骂等）。
 
-文本内容:
+请分析下述内容，识别出其中涉及“政治敏感”、“违规标识”、“违法违规”、“同性”、"低俗"、"擦边卖腐"的片段。
 {text}
 
-请返回 JSON 格式：
+你需要返回一个 JSON 对象，格式如下：
 {{
-    "is_violation": true/false,
-    "time_anchors": [
-        {{"start": 10.5, "end": 15.0, "reason": "涉及暴力言论"}}
-    ]
+  "is_violation": true/false,
+  "time_anchors": [
+    {{
+      "start": 开始时间(float),
+      "end": 结束时间(float),
+      "reason": "违规原因简述"
+    }}
+  ]
 }}
-如果无违规，"is_violation" 为 false，"time_anchors" 为 []。
+1.如果无违规，"is_violation" 为 false，"time_anchors" 为 []。
+2. 只要返回 JSON，不要任何其他解释。
 """
