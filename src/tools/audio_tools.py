@@ -143,8 +143,21 @@ class AudioSliceTool(BaseTool):
         try:
             _ensure_temp_dir()
             config = Config()
-            ext = os.path.splitext(input_path)[1] or ".mp4"
-            output_filename = f"evidence_{uuid.uuid4().hex[:8]}{ext}"
+            
+            # 1. 判断是否为纯音频
+            input_ext = os.path.splitext(input_path)[1].lower()
+            audio_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg', '.wma'}
+            is_audio_mode = input_ext in audio_extensions
+
+            # 2. 设置输出参数
+            if is_audio_mode:
+                output_ext = ".mp3"
+                encoding_args = ['-vn', '-c:a', 'libmp3lame', '-q:a', '2']
+            else:
+                output_ext = ".mp4"
+                encoding_args = ['-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-strict', 'experimental']
+
+            output_filename = f"evidence_{uuid.uuid4().hex[:8]}{output_ext}"
             output_path = os.path.join(config.temp_dir, output_filename)
             duration = max(end - start, 1.0)
 
@@ -153,11 +166,7 @@ class AudioSliceTool(BaseTool):
                 "-ss", str(start),
                 "-t", str(duration),
                 "-i", input_path,
-                "-c:v", "libx264", "-preset", "ultrafast",
-                "-c:a", "aac",
-                "-strict", "experimental",
-                output_path,
-            ]
+            ] + encoding_args + [output_path]
 
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

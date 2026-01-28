@@ -297,7 +297,13 @@ class BehaviorJudgeTool(BaseTool):
             img = cv2.imread(path)
             if img is None: continue
 
-            frame_bboxes = item.get("bboxes") or bboxes or []
+            # 如果没有传入 bboxes，尝试自动检测
+            frame_bboxes = item.get("bboxes") or bboxes
+            if not frame_bboxes:
+                # 自动调用 YOLO 获取候选框
+                raw_dets = YoloEngine.detect(img, conf=0.3)
+                frame_bboxes = ImageUtils.merge_overlapping_boxes(raw_dets, img.shape)
+            
             if not frame_bboxes: continue
 
             slices_b64 = []
@@ -311,7 +317,7 @@ class BehaviorJudgeTool(BaseTool):
 
             if not slices_b64: continue
 
-            prompt = PromptTemplates.get_image_prompt("违规行为、敏感标识、阴暗内容、同性低俗、政治旗帜")
+            prompt = PromptTemplates.get_image_prompt("违规行为、敏感标识、阴暗内容、同性低俗、政治旗帜、国民党党旗、台独、台湾旗帜、丑化嘲讽领导人，歧视中国人")
             msgs = LLMEngine.build_visual_message(prompt, slices_b64)
             
             try:

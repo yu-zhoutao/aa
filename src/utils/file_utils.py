@@ -120,13 +120,14 @@ class FileUtils:
 
     @staticmethod
     async def async_serper_search(image_url: str, extra_query: str = "") -> str:
-        if not image_url or not Config.SERPAPI_KEY: return "未启用搜索。"
+        config = Config()
+        if not image_url or not config.serpapi_key: return "未启用搜索。"
         
         # 1. 修改参数适配 Google Lens
         params = {
             "engine": "google_lens", 
             "url": image_url, 
-            "api_key": Config.SERPAPI_KEY, 
+            "api_key": config.serpapi_key, 
             "hl": "zh-CN", 
             "gl": "cn"
         }

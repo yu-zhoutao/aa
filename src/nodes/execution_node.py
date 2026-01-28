@@ -99,6 +99,14 @@ class ExecutionNode(BaseNode):
                 if 'frames' not in args and frames:
                     args['frames'] = frames
                 
+                # --- 新增：自动注入音频切片数据 ---
+                if tool_name == "audio_violation_check" and "segments" not in args:
+                    if "audio_transcribe_result" in state.shared_context:
+                        segments = state.shared_context["audio_transcribe_result"].get("segments")
+                        if segments:
+                            args["segments"] = segments
+                # --------------------------------
+
                 if tool_name in self.tools:
                     await self.log_info(f"🚀 [针对性复查] 调用: {tool_name}", on_event)
                     tool_result = await self.tools[tool_name].run(**args)

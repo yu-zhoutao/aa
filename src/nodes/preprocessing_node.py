@@ -74,6 +74,47 @@ class PreProcessingNode(BaseNode):
         all_evidence_bboxes = []
         if "evidence_bboxes" in face_res: all_evidence_bboxes.extend(face_res["evidence_bboxes"])
         if "evidence_bboxes" in ocr_risk_res: all_evidence_bboxes.extend(ocr_risk_res["evidence_bboxes"])
+        
+        # --- 优化：使用 YOLO "person" 框替换仅包含人脸的小框 ---
+        if all_evidence_bboxes and "detections" in yolo_res:
+            yolo_dets_map = {item["index"]: item["bboxes"] for item in yolo_res.get("detections", [])}
+            
+            for ev_item in all_evidence_bboxes:
+                f_idx = ev_item.get("frame_index")
+                face_box = ev_item.get("bbox")
+                if f_idx in yolo_dets_map and face_box:
+                    # 在当前帧的 YOLO 检测结果中寻找包含该人脸的 person 框
+                    best_person_box = None
+                    max_iou = 0.0
+                    
+                    # 简单的包含关系检查函数
+                    def get_iou(boxA, boxB):
+                        xA = max(boxA[0], boxB[0])
+                        yA = max(boxA[1], boxB[1])
+                        xB = min(boxA[2], boxB[2])
+                        yB = min(boxA[3], boxB[3])
+                        interArea = max(0, xB - xA) * max(0, yB - yA)
+                        if interArea == 0: return 0
+                        boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+                        return interArea / boxAArea # 这里计算的是 交集/人脸面积，即人脸有多少比例在 person 框内
+
+                    for y_det in yolo_dets_map[f_idx]:
+                        if y_det.get("label") == "person":
+                            y_box = y_det["bbox"]
+                            score = get_iou(face_box, y_box)
+                            # 如果人脸大部分(>80%)都在这个人体框内，且该框比人脸框大
+                            if score > 0.8: 
+                                # 确保人体框确实比人脸框大 (避免误匹配到远处小人)
+                                face_area = (face_box[2]-face_box[0])*(face_box[3]-face_box[1])
+                                person_area = (y_box[2]-y_box[0])*(y_box[3]-y_box[1])
+                                if person_area > face_area:
+                                    best_person_box = y_box
+                                    break # 找到一个即可
+                    
+                    if best_person_box:
+                        print(f"🔄 [PreProcessing] 优化: 将人脸框 {face_box} 替换为人体框 {best_person_box}")
+                        ev_item["bbox"] = best_person_box
+        # -----------------------------------------------------
             
         if all_evidence_bboxes:
             # 按帧分组 bbox
